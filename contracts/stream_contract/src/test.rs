@@ -1641,7 +1641,26 @@ fn test_resume_non_paused_stream_fails() {
 
     assert_eq!(
         client.try_resume_stream(&sender, &id),
-        Err(Ok(StreamError::StreamInactive))
+        Err(Ok(StreamError::StreamNotPaused))
+    );
+}
+
+#[test]
+fn test_pause_already_paused_stream_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &Address::generate(&env), &token, &1_000, &1_000);
+
+    client.pause_stream(&sender, &id);
+
+    assert_eq!(
+        client.try_pause_stream(&sender, &id),
+        Err(Ok(StreamError::StreamAlreadyPaused))
     );
 }
 
@@ -2527,7 +2546,9 @@ fn test_resume_stream_emits_event() {
     let payload: StreamResumedEvent = StreamResumedEvent::try_from_val(&env, &ev.2).unwrap();
     assert_eq!(payload.stream_id, id);
     assert_eq!(payload.sender, sender);
-    assert_eq!(payload.new_end_time, 1150);
+    // Pause at t=100 accrues 100 tokens (rate 1/s) that are already claimable
+    // at resume, so the drain time is 900 more seconds from t=150, not 1000.
+    assert_eq!(payload.new_end_time, 1050);
 }
 
 // ─── CEI / reentrancy regression (#789) ──────────────────────────────────────
