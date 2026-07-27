@@ -631,4 +631,72 @@ describe('SorobanEventWorker', () => {
       );
     });
   });
+
+  describe('poll / triggerPoll serialization (#843)', () => {
+    it('does not run fetchAndProcessEvents concurrently for overlapping poll and triggerPoll', async () => {
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      const releases: Array<() => void> = [];
+
+      const fetchSpy = vi
+        .spyOn(worker as any, 'fetchAndProcessEvents')
+        .mockImplementation(async () => {
+          concurrent += 1;
+          maxConcurrent = Math.max(maxConcurrent, concurrent);
+          await new Promise<void>((resolve) => {
+            releases.push(resolve);
+          });
+          concurrent -= 1;
+        });
+
+      // Avoid scheduling real timers from poll()'s finally
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const pollPromise = (worker as any).poll();
+      const triggerPromise = worker.triggerPoll();
+
+      await vi.waitFor(() => expect(releases.length).toBe(1));
+      expect(concurrent).toBe(1);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(releases.length).toBe(2));
+      expect(concurrent).toBe(1);
+
+      releases[1]!();
+      await Promise.all([pollPromise, triggerPromise]);
+
+      expect(maxConcurrent).toBe(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('waitForDrain awaits an in-flight triggerPoll batch', async () => {
+      let resolveFetch!: () => void;
+      vi.spyOn(worker as any, 'fetchAndProcessEvents').mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      );
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const triggerPromise = worker.triggerPoll();
+      // activeBatch is registered synchronously in runExclusive
+      expect((worker as any).activeBatch).not.toBeNull();
+
+      let drained = false;
+      const drainPromise = worker.waitForDrain().then(() => {
+        drained = true;
+      });
+
+      await Promise.resolve();
+      expect(drained).toBe(false);
+
+      resolveFetch();
+      await Promise.all([triggerPromise, drainPromise]);
+      expect(drained).toBe(true);
+      expect((worker as any).activeBatch).toBeNull();
+    });
+  });
 });

@@ -77,7 +77,13 @@ export class SorobanEventWorker {
 
   private isRunning = false;
   private pollTimer: NodeJS.Timeout | undefined;
+  /**
+   * In-flight fetch/process work from either the scheduler or `triggerPoll`.
+   * `waitForDrain()` awaits this so graceful shutdown covers replay batches too.
+   */
   private activeBatch: Promise<void> | null = null;
+  /** Promise chain that serializes all `fetchAndProcessEvents` invocations. */
+  private batchMutex: Promise<void> = Promise.resolve();
 
   constructor() {
     const rpcUrl =
@@ -118,23 +124,49 @@ export class SorobanEventWorker {
     logger.info("[SorobanWorker] Stopped.");
   }
 
-  /** Wait for the currently-running poll batch to finish (no-op if idle). */
+  /** Wait for the currently-running poll/replay batch to finish (no-op if idle). */
   async waitForDrain(): Promise<void> {
     if (this.activeBatch) await this.activeBatch;
   }
 
-  /** Trigger an immediate poll cycle (used for replay and manual updates). */
+  /**
+   * Trigger an immediate poll cycle (used for replay and manual updates).
+   * Serialized with the scheduled poll via `runExclusive` so two cursor writes
+   * cannot overlap and regress `lastCursor` (#843).
+   */
   async triggerPoll(): Promise<void> {
     if (!this.isRunning) return;
 
     try {
-      await this.fetchAndProcessEvents();
+      await this.runExclusive(() => this.fetchAndProcessEvents());
     } catch (err) {
       logger.error("[SorobanWorker] Manual poll error:", err);
     }
   }
 
   // ─── Internal ──────────────────────────────────────────────────────────────
+
+  /**
+   * Run `fn` exclusively with any other poll/replay batch.
+   * Registers the work on `activeBatch` so `waitForDrain` awaits replays too.
+   */
+  private runExclusive(fn: () => Promise<void>): Promise<void> {
+    const run = this.batchMutex.then(fn);
+    // Keep the mutex chain alive even when a batch rejects.
+    const gate = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.batchMutex = gate;
+    this.activeBatch = gate;
+    // Clear only if nothing newer registered on activeBatch after this gate.
+    void gate.then(() => {
+      if (this.activeBatch === gate) {
+        this.activeBatch = null;
+      }
+    });
+    return run;
+  }
 
   private scheduleNext(): void {
     if (!this.isRunning) return;
@@ -172,13 +204,13 @@ export class SorobanEventWorker {
   }
 
   private async poll(): Promise<void> {
-    this.activeBatch = this.fetchAndProcessEvents().catch((err) => {
-      logger.error("[SorobanWorker] Unhandled error during poll:", err);
-    });
     try {
-      await this.activeBatch;
+      await this.runExclusive(() =>
+        this.fetchAndProcessEvents().catch((err) => {
+          logger.error("[SorobanWorker] Unhandled error during poll:", err);
+        }),
+      );
     } finally {
-      this.activeBatch = null;
       this.scheduleNext();
     }
   }
