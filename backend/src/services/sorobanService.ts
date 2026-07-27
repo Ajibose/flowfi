@@ -135,7 +135,7 @@ export function resetServer(): void {
 }
 
 export interface ChainStream {
-  streamId: number;
+  streamId: bigint;
   sender: string;
   recipient: string;
   tokenAddress: string;
@@ -245,7 +245,7 @@ export async function submitContractCall(method: string, args: xdr.ScVal[], send
   return response.hash;
 }
 
-export async function getStreamFromChain(streamId: number): Promise<ChainStream | null> {
+export async function getStreamFromChain(streamId: bigint): Promise<ChainStream | null> {
   if (!getContractId()) return null;
 
   try {
@@ -277,7 +277,7 @@ export async function getStreamFromChain(streamId: number): Promise<ChainStream 
   }
 }
 
-export async function getClaimableFromChain(streamId: number): Promise<string | null> {
+export async function getClaimableFromChain(streamId: bigint): Promise<string | null> {
   if (!getContractId()) return null;
 
   try {
@@ -292,13 +292,13 @@ export async function getClaimableFromChain(streamId: number): Promise<string | 
   }
 }
 
-export async function cancelStream(streamId: number, senderSecret: string): Promise<string> {
+export async function cancelStream(streamId: bigint, senderSecret: string): Promise<string> {
   return submitContractCall('cancel_stream', [
     nativeToScVal(streamId, { type: 'u64' }),
   ], senderSecret);
 }
 
-export async function topUpStream(streamId: number, amount: bigint, callerAddress: string): Promise<string> {
+export async function topUpStream(streamId: bigint, amount: bigint, callerAddress: string): Promise<string> {
   const keeperSecret = getKeeperSecret();
   if (!keeperSecret) throw new Error('KEEPER_SECRET_KEY not configured');
   return submitContractCall('top_up_stream', [
@@ -324,7 +324,7 @@ export interface PauseResumeResult {
  */
 export async function pauseStream(
   senderAddress: string,
-  streamId: number
+  streamId: bigint
 ): Promise<PauseResumeResult> {
   if (!getContractId()) {
     throw new Error('Stream contract ID not configured');
@@ -358,7 +358,7 @@ export async function pauseStream(
  */
 export async function resumeStream(
   senderAddress: string,
-  streamId: number
+  streamId: bigint
 ): Promise<PauseResumeResult> {
   if (!getContractId()) {
     throw new Error('Stream contract ID not configured');
@@ -390,7 +390,7 @@ export async function resumeStream(
  * matching the current pause/resume backend pattern.
  */
 export async function withdraw(
-  streamId: number,
+  streamId: bigint,
   recipientAddress: string,
 ): Promise<PauseResumeResult> {
   if (!getContractId()) {
