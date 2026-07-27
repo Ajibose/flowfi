@@ -1,4 +1,5 @@
 
+import Link from 'next/link';
 import { Button } from './ui/Button';
 import { MobileMockup } from './MobileMockup';
 
@@ -26,15 +27,14 @@ export const Hero = () => {
                 </p>
 
                 <div className="mt-12 flex animate-slide-up flex-col gap-5 sm:flex-row [animation-delay:0.2s] w-full justify-center lg:justify-start">
-                    <Button variant="primary" size="lg" glow className="min-w-[200px]">
-                        Start Streaming
-                        <svg className="ml-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                        </svg>
-                    </Button>
-                    <Button variant="outline" size="lg" className="min-w-[200px]">
-                        Governance App
-                    </Button>
+                    <Link href="/dashboard">
+                        <Button variant="primary" size="lg" glow className="min-w-[200px]">
+                            Start Streaming
+                            <svg className="ml-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                            </svg>
+                        </Button>
+                    </Link>
                 </div>
 
                 <div className="mt-20 flex items-center gap-4 animate-fade-in [animation-delay:0.4s]">
