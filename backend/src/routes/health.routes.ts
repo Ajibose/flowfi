@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { INDEXER_STATE_ID } from '../lib/indexer-state.js';
+import { sorobanEventWorker } from '../workers/soroban-event-worker.js';
 
 const router = Router();
 
@@ -20,6 +21,10 @@ const router = Router();
  *       (lag > 60 s). A cold-started instance with no state row yet, or a
  *       deployment with the indexer intentionally disabled, always returns 200
  *       as long as the DB is reachable.
+ *       **Event-processing failures** are also reported. When the indexer is
+ *       enabled and recent per-event failures spike (≥50% of attempts in the
+ *       last 5 minutes, with ≥3 samples), the endpoint returns 503 even if
+ *       lag looks healthy (the IndexerState upsert bumps updatedAt every poll).
  *     responses:
  *       200:
  *         description: Service is healthy
@@ -43,6 +48,19 @@ const router = Router();
  *                   nullable: true
  *                   description: Seconds since last indexer update, or null when no state row exists yet
  *                   example: 5
+ *                 eventsProcessed:
+ *                   type: integer
+ *                   description: Lifetime count of successfully processed indexer events
+ *                 eventsFailed:
+ *                   type: integer
+ *                   description: Lifetime count of indexer events that threw during processing
+ *                 lastErrorAt:
+ *                   type: string
+ *                   nullable: true
+ *                   description: ISO timestamp of the most recent per-event processing failure
+ *                 indexerDegraded:
+ *                   type: boolean
+ *                   description: True when recent event-processing failure rate indicates a spike
  *                 uptime:
  *                   type: number
  *                   description: Server uptime in seconds
@@ -74,11 +92,16 @@ router.get('/', async (_req: Request, res: Response) => {
     indexerLag = -1;
   }
 
-  // 503 only when: DB is down, OR the indexer is enabled and its state row is
-  // stale (lag > 60). A missing state row (lag === -1) is a cold-start
-  // condition, not a failure, even when the indexer is enabled.
-  const indexerDegraded = indexerEnabled && indexerLag > 60;
-  const isHealthy = dbStatus === 'connected' && !indexerDegraded;
+  const eventCounters = sorobanEventWorker.getEventCounters();
+
+  // 503 when: DB is down, OR the indexer is enabled and its state row is
+  // stale (lag > 60), OR recent event-processing failures are spiking.
+  // A missing state row (lag === -1) is a cold-start condition, not a failure,
+  // even when the indexer is enabled.
+  const indexerLagDegraded = indexerEnabled && indexerLag > 60;
+  const indexerFailureDegraded = indexerEnabled && eventCounters.degraded;
+  const isHealthy =
+    dbStatus === 'connected' && !indexerLagDegraded && !indexerFailureDegraded;
   const status = isHealthy ? 'ok' : 'degraded';
 
   res.status(isHealthy ? 200 : 503).json({
@@ -86,6 +109,10 @@ router.get('/', async (_req: Request, res: Response) => {
     db: dbStatus,
     indexerEnabled,
     indexerLag: indexerLag === -1 ? null : indexerLag,
+    eventsProcessed: eventCounters.eventsProcessed,
+    eventsFailed: eventCounters.eventsFailed,
+    lastErrorAt: eventCounters.lastErrorAt,
+    indexerDegraded: eventCounters.degraded,
     uptime: process.uptime(),
   });
 });

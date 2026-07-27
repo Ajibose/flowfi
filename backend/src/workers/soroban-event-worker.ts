@@ -67,6 +67,23 @@ export function decodeMap(val: xdr.ScVal): Record<string, xdr.ScVal> {
   return result;
 }
 
+// ─── Event-processing counters / degraded signal ─────────────────────────────
+
+/** Sliding window used to decide whether recent failures count as a "spike". */
+const FAILURE_WINDOW_MS = 5 * 60 * 1000;
+/** Need at least this many attempts in the window before marking degraded. */
+const MIN_SAMPLES_FOR_DEGRADED = 3;
+/** Degraded when recent failure rate is at or above this threshold. */
+const FAILURE_RATE_THRESHOLD = 0.5;
+
+export interface IndexerEventCounters {
+  eventsProcessed: number;
+  eventsFailed: number;
+  lastErrorAt: string | null;
+  /** True when recent failure rate indicates a spike (not just lifetime totals). */
+  degraded: boolean;
+}
+
 // ─── Worker Class ─────────────────────────────────────────────────────────────
 
 export class SorobanEventWorker {
@@ -79,6 +96,15 @@ export class SorobanEventWorker {
   private pollTimer: NodeJS.Timeout | undefined;
   private activeBatch: Promise<void> | null = null;
 
+  /** Lifetime count of events that processed without throwing. */
+  private eventsProcessed = 0;
+  /** Lifetime count of events that threw during processing. */
+  private eventsFailed = 0;
+  /** Timestamp of the most recent per-event processing failure. */
+  private lastErrorAt: Date | null = null;
+  /** Recent attempt outcomes for sliding-window spike detection. */
+  private recentOutcomes: { ok: boolean; at: number }[] = [];
+
   constructor() {
     const rpcUrl =
       process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
@@ -89,6 +115,44 @@ export class SorobanEventWorker {
     );
     this.startLedger = parseInt(process.env.INDEXER_START_LEDGER ?? "0", 10);
     this.server = new rpc.Server(rpcUrl, { allowHttp: true });
+  }
+
+  /**
+   * Snapshot of event-processing counters for /health and admin metrics.
+   * `degraded` is true when ≥50% of attempts in the last 5 minutes failed
+   * (with at least 3 samples), so a broken indexer fails the health check
+   * even when lag stays low because `updatedAt` is bumped every poll.
+   */
+  getEventCounters(): IndexerEventCounters {
+    return {
+      eventsProcessed: this.eventsProcessed,
+      eventsFailed: this.eventsFailed,
+      lastErrorAt: this.lastErrorAt?.toISOString() ?? null,
+      degraded: this.isFailureSpike(),
+    };
+  }
+
+  /** @internal Reset counters — used by unit tests. */
+  resetEventCounters(): void {
+    this.eventsProcessed = 0;
+    this.eventsFailed = 0;
+    this.lastErrorAt = null;
+    this.recentOutcomes = [];
+  }
+
+  private recordOutcome(ok: boolean): void {
+    const now = Date.now();
+    this.recentOutcomes.push({ ok, at: now });
+    const cutoff = now - FAILURE_WINDOW_MS;
+    this.recentOutcomes = this.recentOutcomes.filter((o) => o.at >= cutoff);
+  }
+
+  private isFailureSpike(): boolean {
+    const cutoff = Date.now() - FAILURE_WINDOW_MS;
+    const recent = this.recentOutcomes.filter((o) => o.at >= cutoff);
+    if (recent.length < MIN_SAMPLES_FOR_DEGRADED) return false;
+    const failed = recent.filter((o) => !o.ok).length;
+    return failed / recent.length >= FAILURE_RATE_THRESHOLD;
   }
 
   /**
@@ -234,10 +298,15 @@ export class SorobanEventWorker {
 
       try {
         await this.processEvent(event);
+        this.eventsProcessed += 1;
+        this.recordOutcome(true);
         // Use the event ID as the cursor if pagingToken is not available
         lastCursor = event.id;
         lastLedger = event.ledger;
       } catch (err) {
+        this.eventsFailed += 1;
+        this.lastErrorAt = new Date();
+        this.recordOutcome(false);
         logger.error(
           `[SorobanWorker] Failed to process event ${event.id}:`,
           err,
