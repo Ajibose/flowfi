@@ -1,46 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { rpc } from '@stellar/stellar-sdk';
 
+const mockPrismaObj = vi.hoisted(() => ({
+  indexerState: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    upsert: vi.fn(),
+  },
+  user: {
+    upsert: vi.fn(),
+  },
+  stream: {
+    upsert: vi.fn(),
+    findUniqueOrThrow: vi.fn(),
+  },
+  streamEvent: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    create: vi.fn(),
+  },
+  $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
+  $disconnect: vi.fn(),
+}));
+
 // Mock prisma before importing the worker
 vi.mock('../src/lib/prisma.js', () => ({
-  default: {
-    indexerState: {
-      upsert: vi.fn(),
-    },
-    user: {
-      upsert: vi.fn(),
-    },
-    stream: {
-      upsert: vi.fn(),
-      findUniqueOrThrow: vi.fn(),
-    },
-    streamEvent: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      create: vi.fn(),
-    },
-    $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
-    $disconnect: vi.fn(),
-  },
-  prisma: {
-    indexerState: {
-      upsert: vi.fn(),
-    },
-    user: {
-      upsert: vi.fn(),
-    },
-    stream: {
-      upsert: vi.fn(),
-      findUniqueOrThrow: vi.fn(),
-    },
-    streamEvent: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      create: vi.fn(),
-    },
-    $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
-    $disconnect: vi.fn(),
-  },
+  default: mockPrismaObj,
+  prisma: mockPrismaObj,
 }));
 
 // Mock SSE service
@@ -695,6 +681,132 @@ describe('SorobanEventWorker', () => {
 
       expect(capturedEventUpsert?.create?.streamId).toBe(streamId);
       expect(typeof capturedEventUpsert?.create?.streamId).toBe('bigint');
+    });
+
+    it('cursor_does_not_advance_past_failed_event_in_mixed_batch', async () => {
+      // Setup initial state: lastCursor is 'cursor-initial'
+      (prisma.indexerState.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'singleton',
+        lastLedger: 100,
+        lastCursor: 'cursor-initial',
+        updatedAt: new Date(),
+      });
+      (prisma.indexerState.upsert as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'singleton',
+        lastLedger: 100,
+        lastCursor: 'cursor-initial',
+        updatedAt: new Date(),
+      });
+
+      // Event 1: Missing required body fields for fee_config_updated -> handleFeeConfigUpdated throws
+      const event1: rpc.Api.EventResponse = {
+        id: 'cursor-event-1',
+        type: 'contract',
+        ledger: 101,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-failed-1',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'fee_config_updated' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [] as any,
+        } as any,
+      };
+
+      // Event 2: Valid admin_transferred event
+      const event2: rpc.Api.EventResponse = {
+        id: 'cursor-event-2',
+        type: 'contract',
+        ledger: 102,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-success-2',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'admin_transferred' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [
+            { key: () => ({ sym: () => 'previous_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'new_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+          ] as any,
+        } as any,
+      };
+
+      // Event 3: Valid admin_transferred event
+      const event3: rpc.Api.EventResponse = {
+        id: 'cursor-event-3',
+        type: 'contract',
+        ledger: 103,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-success-3',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'admin_transferred' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [
+            { key: () => ({ sym: () => 'previous_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'new_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+          ] as any,
+        } as any,
+      };
+
+      // Mock getEvents on worker.server
+      vi.spyOn((worker as any).server, 'getEvents').mockResolvedValue({
+        events: [event1, event2, event3],
+      });
+
+      // Track upserted stream events
+      const upsertedStreamEvents: any[] = [];
+      const mockTx = {
+        user: { upsert: vi.fn().mockResolvedValue({}) },
+        stream: { upsert: vi.fn().mockResolvedValue({ streamId: 0n, isActive: false }) },
+        streamEvent: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          upsert: vi.fn().mockImplementation((args) => {
+            upsertedStreamEvents.push(args);
+            return Promise.resolve({ id: 'event-id' });
+          }),
+        },
+      };
+
+      (prisma.$transaction as ReturnType<typeof vi.fn>).mockImplementation((cb) => cb(mockTx));
+
+      // Run fetchAndProcessEvents
+      await (worker as any).fetchAndProcessEvents();
+
+      // Assert successful later events (event2 and event3) were written exactly once each
+      const event1Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-failed-1'
+      );
+      const event2Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-success-2'
+      );
+      const event3Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-success-3'
+      );
+
+      expect(event1Writes.length).toBe(0);
+      expect(event2Writes.length).toBe(1);
+      expect(event3Writes.length).toBe(1);
+
+      // Assert: persisted IndexerState.lastCursor is NOT advanced past the failed event's position
+      // (i.e. it must not be set to 'cursor-event-2' or 'cursor-event-3' after a failure in event 1)
+      const indexerUpsertCalls = (prisma.indexerState.upsert as ReturnType<typeof vi.fn>).mock.calls;
+      const lastSaveCall = indexerUpsertCalls[indexerUpsertCalls.length - 1]![0];
+
+      expect(lastSaveCall.update.lastCursor).not.toBe('cursor-event-2');
+      expect(lastSaveCall.update.lastCursor).not.toBe('cursor-event-3');
     });
   });
 
