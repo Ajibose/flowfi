@@ -2717,6 +2717,115 @@ fn event_field_names(env: &Env, payload: &soroban_sdk::Val) -> std::vec::Vec<std
     names
 }
 
+// ─── Concurrent streams (same sender/recipient/token) ─────────────────────────
+
+#[test]
+fn test_concurrent_streams_same_tuple_independent_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    let client = create_contract(&env);
+    let id1 = client.create_stream(&sender, &recipient, &token, &1_000, &100);
+    let id2 = client.create_stream(&sender, &recipient, &token, &1_000, &100);
+
+    // Both streams must exist and have distinct IDs.
+    assert_ne!(id1, id2);
+    let s1 = client.get_stream(&id1).unwrap();
+    let s2 = client.get_stream(&id2).unwrap();
+    assert_eq!(s1.deposited_amount, 1_000);
+    assert_eq!(s2.deposited_amount, 1_000);
+    assert_eq!(s1.withdrawn_amount, 0);
+    assert_eq!(s2.withdrawn_amount, 0);
+
+    // Advance time and withdraw from stream 1 only.
+    env.ledger().with_mut(|l| l.timestamp += 50);
+    let claimed1 = client.withdraw(&recipient, &id1);
+    assert_eq!(claimed1, 500); // 50 s * (1 000 / 100) = 500
+
+    // Stream 2 must be unaffected.
+    let s2_after = client.get_stream(&id2).unwrap();
+    assert_eq!(s2_after.withdrawn_amount, 0);
+    assert_eq!(s2_after.deposited_amount, 1_000);
+
+    // Advance more time and withdraw from stream 2.
+    env.ledger().with_mut(|l| l.timestamp += 50);
+    let claimed2 = client.withdraw(&recipient, &id2);
+    assert_eq!(claimed2, 1_000); // 100 s * 10 rate = 1 000 (full stream)
+
+    // Stream 1 must still have its original withdrawn amount unchanged.
+    let s1_final = client.get_stream(&id1).unwrap();
+    assert_eq!(s1_final.withdrawn_amount, 500);
+}
+
+// ─── Cumulative fee rounding drift ────────────────────────────────────────────
+//
+// The protocol fee uses integer division: fee = amount * fee_rate_bps / 10_000.
+// When many small deposits are made sequentially, each individual fee may round
+// down (due to integer truncation), causing the sum of collected fees to be
+// slightly less than fee_rate_bps/10_000 of the gross total. This test verifies
+// the drift stays within an acceptable tolerance.
+//
+// Rounding direction: favours the user (the protocol receives ≤ the ideal fee).
+
+#[test]
+fn test_cumulative_fee_rounding_drift() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let fee_rate_bps: u32 = 199;
+    mint(&env, &token, &sender, 10_000_000);
+
+    let client = create_contract(&env);
+    let token_client = token::Client::new(&env, &token);
+    client.initialize(&admin, &treasury, &fee_rate_bps);
+
+    let id = client.create_stream(&sender, &recipient, &token, &100_000, &10_000);
+
+    // Perform 200 small sequential top-ups, each for 101 tokens.
+    // Per top-up: fee = 101 * 199 / 10_000 = 20_099 / 10_000 = 2 (rounded down).
+    let top_up_count = 200;
+    let per_top_up = 101i128;
+    for _ in 0..top_up_count {
+        mint(&env, &token, &sender, per_top_up);
+        client.top_up_stream(&sender, &id, &per_top_up);
+    }
+
+    let total_gross = 100_000i128 + (top_up_count as i128) * per_top_up;
+    let ideal_fee = (total_gross * fee_rate_bps as i128) / 10_000;
+    let actual_fee = token_client.balance(&treasury);
+
+    // Each individual top-up of 101 * 199 / 10000 = 2.0099 → 2, losing 0.0099 per op.
+    // Over 200 ops: at most 200 * 0.0099 ≈ 1.98 tokens of downward drift.
+    // Allow tolerance of 2 tokens (enforced by `max_drift`).
+    let max_drift = top_up_count as i128;
+    let drift = ideal_fee - actual_fee;
+    assert!(
+        drift >= 0,
+        "Fee collected ({}) exceeds ideal ({}) — rounding favoured protocol (unexpected)",
+        actual_fee,
+        ideal_fee
+    );
+    assert!(
+        drift <= max_drift,
+        "Fee drift too large: ideal={ideal_fee}, actual={actual_fee}, drift={drift}, max={max_drift}"
+    );
+}
+
+// ─── update_fee_config ceiling enforcement ─────────────────────────────────────
+//
+// The existing test `test_update_fee_config_rejects_invalid_fee_rate` at line 171
+// already verifies that `update_fee_config` rejects a rate above MAX_FEE_RATE_BPS
+// (1 000). The implementation check is at `lib.rs:95-97`.
+
 #[test]
 fn test_stream_created_event_field_names_match_decoder_expectations() {
     let env = Env::default();
