@@ -106,7 +106,7 @@ export const withdrawHandler = async (req: AuthenticatedRequest, res: Response) 
       // Call Soroban service
       const result = await sorobanWithdraw(parsedStreamId, req.user.publicKey);
       
-      const now = Math.floor(Date.now() / 1000);
+      const now = BigInt(Math.floor(Date.now() / 1000));
       const nextWithdrawnAmount = (
         BigInt(stream.withdrawnAmount) + BigInt(claimable.claimableAmount)
       ).toString();
