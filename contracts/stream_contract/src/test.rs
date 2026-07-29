@@ -1,5 +1,7 @@
 extern crate std;
 
+use std::string::ToString;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -178,6 +180,20 @@ fn test_update_fee_config_rejects_invalid_fee_rate() {
     client.initialize(&admin, &treasury, &500);
     let result = client.try_update_fee_config(&admin, &treasury, &1001);
     assert_eq!(result, Err(Ok(StreamError::InvalidFeeRate)));
+}
+
+#[test]
+fn test_update_fee_config_rejects_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_contract(&env);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Call update_fee_config before initialize
+    let result = client.try_update_fee_config(&admin, &treasury, &100);
+    assert_eq!(result, Err(Ok(StreamError::NotInitialized)));
 }
 
 #[test]
@@ -495,6 +511,53 @@ fn test_top_up_emits_event() {
     assert_eq!(payload.stream_id, id);
     assert_eq!(payload.amount, 5_000);
     assert_eq!(payload.new_deposited_amount, 15_000);
+}
+
+#[test]
+fn test_top_up_preserves_already_accrued_claimable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    // Recipient vests 900 tokens (rate 1/sec) before the top-up.
+    env.ledger().with_mut(|l| l.timestamp += 900);
+    assert_eq!(client.get_claimable_amount(&id), Some(900));
+
+    client.top_up_stream(&sender, &id, &100);
+
+    // Already-accrued, unwithdrawn time must survive the top-up.
+    assert_eq!(client.get_claimable_amount(&id), Some(900));
+}
+
+#[test]
+fn test_top_up_then_cancel_pays_pre_topup_accrued() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 900);
+    client.top_up_stream(&sender, &id, &100);
+
+    let token_client = token::Client::new(&env, &token);
+    let recipient_balance_before = token_client.balance(&recipient);
+
+    // Cancel immediately after the top-up — no further time should accrue.
+    client.cancel_stream(&sender, &id);
+
+    let recipient_balance_after = token_client.balance(&recipient);
+    assert_eq!(recipient_balance_after - recipient_balance_before, 900);
 }
 
 // ─── withdraw ────────────────────────────────────────────────────────────────
@@ -821,6 +884,40 @@ fn test_no_fee_event_when_fee_rate_is_zero() {
     assert!(
         fee_event.is_none(),
         "fee_collected must not fire when fee rate is 0"
+    );
+}
+
+#[test]
+fn test_no_fee_transfer_or_event_when_fee_rounds_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    let token_client = token::Client::new(&env, &token);
+
+    // Non-zero fee rate, but tiny amount => fee rounds down to 0:
+    // 1 * 200 / 10_000 = 0
+    client.initialize(&admin, &treasury, &200);
+    let id = client.create_stream(&sender, &Address::generate(&env), &token, &1, &1);
+
+    assert_eq!(token_client.balance(&treasury), 0);
+
+    let s = client.get_stream(&id).unwrap();
+    assert_eq!(s.deposited_amount, 1);
+
+    let events = env.events().all();
+    let fee_event = events.iter().find(|e| {
+        Symbol::try_from_val(&env, &e.1.get(0).unwrap()).unwrap()
+            == Symbol::new(&env, "fee_collected")
+    });
+    assert!(
+        fee_event.is_none(),
+        "fee_collected must not fire when rounded fee is 0"
     );
 }
 
@@ -1546,7 +1643,26 @@ fn test_resume_non_paused_stream_fails() {
 
     assert_eq!(
         client.try_resume_stream(&sender, &id),
-        Err(Ok(StreamError::StreamInactive))
+        Err(Ok(StreamError::StreamNotPaused))
+    );
+}
+
+#[test]
+fn test_pause_already_paused_stream_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &Address::generate(&env), &token, &1_000, &1_000);
+
+    client.pause_stream(&sender, &id);
+
+    assert_eq!(
+        client.try_pause_stream(&sender, &id),
+        Err(Ok(StreamError::StreamAlreadyPaused))
     );
 }
 
@@ -1756,6 +1872,34 @@ fn test_top_up_while_paused_increases_deposited() {
     let new_deposited = client.get_stream(&id).unwrap().deposited_amount;
 
     assert!(new_deposited > old_deposited);
+}
+
+#[test]
+fn test_top_up_while_paused_does_not_advance_last_update_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    // Accrue 300s, then pause.
+    env.ledger().with_mut(|l| l.timestamp += 300);
+    client.pause_stream(&sender, &id);
+
+    // More ledger time passes while paused; top up during this window.
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.top_up_stream(&sender, &id, &100);
+
+    let stream = client.get_stream(&id).unwrap();
+    assert!(stream.last_update_time <= stream.paused_at.unwrap());
+
+    // Claimable should still reflect the 300s accrued before the pause, not be
+    // wiped out by the top-up pushing last_update_time past paused_at.
+    assert_eq!(client.get_claimable_amount(&id), Some(300));
 }
 
 #[test]
@@ -2404,5 +2548,152 @@ fn test_resume_stream_emits_event() {
     let payload: StreamResumedEvent = StreamResumedEvent::try_from_val(&env, &ev.2).unwrap();
     assert_eq!(payload.stream_id, id);
     assert_eq!(payload.sender, sender);
-    assert_eq!(payload.new_end_time, 1150);
+    // Pause at t=100 accrues 100 tokens (rate 1/s) that are already claimable
+    // at resume, so the drain time is 900 more seconds from t=150, not 1000.
+    assert_eq!(payload.new_end_time, 1050);
+}
+
+// ─── CEI / reentrancy regression (#789) ──────────────────────────────────────
+
+/// Verify that stream state is committed to storage before the token transfer,
+/// so that a re-entrant call (e.g. from a malicious token hook) at the same
+/// ledger timestamp sees the updated withdrawn_amount and cannot claim twice.
+#[test]
+fn test_withdraw_state_committed_before_transfer_prevents_double_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    // 1 000 tokens / 1 000 s = 1 token/s
+    let id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+
+    // First withdrawal: 100 tokens accrued.
+    let claimed = client.withdraw(&recipient, &id);
+    assert_eq!(claimed, 100);
+
+    // Immediately re-attempt at the same timestamp (simulates a re-entrant call
+    // during the token transfer). State was already committed, so no additional
+    // tokens have accrued and the call must fail with InvalidAmount.
+    let result = client.try_withdraw(&recipient, &id);
+    assert_eq!(
+        result,
+        Err(Ok(StreamError::InvalidAmount)),
+        "re-entrant withdrawal at same timestamp must fail: state must be committed before transfer"
+    );
+
+    // Token balance must reflect exactly one payout.
+    let token_client = token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), 100);
+}
+
+/// Verify that cancel_stream commits state before both token transfers, so a
+/// re-entrant cancel attempt finds the stream already inactive.
+#[test]
+fn test_cancel_state_committed_before_transfers_prevents_double_cancel() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    let id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.cancel_stream(&sender, &id);
+
+    // Stream is now inactive; a second cancel (simulating re-entry) must fail.
+    let result = client.try_cancel_stream(&sender, &id);
+    assert_eq!(
+        result,
+        Err(Ok(StreamError::StreamInactive)),
+        "re-entrant cancel must fail: stream marked inactive before transfers"
+    );
+
+    // Total outflow must equal deposited amount (no double-payout).
+    let token_client = token::Client::new(&env, &token);
+    let s = client.get_stream(&id).unwrap();
+    assert_eq!(
+        token_client.balance(&recipient) + token_client.balance(&sender),
+        s.deposited_amount
+    );
+}
+
+// ─── Event Wire Format Regression Guard ───────────────────────────────────────
+//
+// Pins the exact Map field names emitted for each event's `data` payload, as
+// read by `decodeMap()` in `backend/src/workers/soroban-event-worker.ts`. If a
+// field is renamed or removed here without updating the matching decoder in
+// `soroban-event-worker.ts`, this test fails before the mismatch reaches
+// production. See the mirrored field/type table in
+// `backend/tests/events-wire-format.test.ts`.
+
+/// Returns the sorted field names of a `#[contracttype]` event payload,
+/// independent of struct field declaration order.
+fn event_field_names(env: &Env, payload: &soroban_sdk::Val) -> std::vec::Vec<std::string::String> {
+    let map = soroban_sdk::Map::<Symbol, soroban_sdk::Val>::try_from_val(env, payload)
+        .expect("event data is not a Map");
+    let mut names: std::vec::Vec<std::string::String> = map
+        .keys()
+        .iter()
+        .map(|sym| sym.to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn test_stream_created_event_field_names_match_decoder_expectations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    client.create_stream(&sender, &recipient, &token, &500, &100);
+
+    let events = env.events().all();
+    let ev = events
+        .iter()
+        .find(|e| {
+            Symbol::try_from_val(&env, &e.1.get(0).unwrap()).unwrap()
+                == Symbol::new(&env, "stream_created")
+        })
+        .expect("stream_created event not found");
+
+    let mut names = event_field_names(&env, &ev.2);
+    names.sort();
+
+    // Must match the fields `handleStreamCreated` in soroban-event-worker.ts
+    // reads via `decodeMap`: sender, recipient, token_address, rate_per_second,
+    // deposited_amount, start_time. `stream_id` is also present in the data
+    // map (StreamCreatedEvent's first field) but the worker reads it from the
+    // topic instead, via `streamIdTopic`.
+    let mut expected: std::vec::Vec<std::string::String> = std::vec::Vec::from([
+        "sender",
+        "recipient",
+        "token_address",
+        "rate_per_second",
+        "deposited_amount",
+        "start_time",
+        "stream_id",
+    ])
+    .iter()
+    .map(|s| std::string::String::from(*s))
+    .collect();
+    expected.sort();
+
+    assert_eq!(
+        names, expected,
+        "stream_created event fields drifted from soroban-event-worker.ts's decodeMap expectations"
+    );
 }
