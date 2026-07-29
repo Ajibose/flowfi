@@ -177,7 +177,7 @@ export const createStream = async (req: Request, res: Response) => {
     }
 
     const endTime =
-      parsedStartTime + Number(parsedDepositedAmount / parsedRatePerSecond);
+      BigInt(parsedStartTime) + (parsedDepositedAmount / parsedRatePerSecond);
 
     // Issue #809: never let the upsert update branch touch a stream owned by a
     // different wallet. The caller is already proven to equal `sender` above, so
@@ -195,7 +195,7 @@ export const createStream = async (req: Request, res: Response) => {
       where: { streamId: parsedStreamId },
       update: {
         isActive: true,
-        lastUpdateTime: Math.floor(Date.now() / 1000),
+        lastUpdateTime: BigInt(Math.floor(Date.now() / 1000)),
       },
       create: {
         streamId: parsedStreamId,
@@ -205,9 +205,9 @@ export const createStream = async (req: Request, res: Response) => {
         ratePerSecond,
         depositedAmount,
         withdrawnAmount: "0",
-        startTime: parsedStartTime,
+        startTime: BigInt(parsedStartTime),
         endTime,
-        lastUpdateTime: parsedStartTime,
+        lastUpdateTime: BigInt(parsedStartTime),
       },
     });
 
@@ -738,7 +738,7 @@ export const topUpStreamHandler = async (req: Request, res: Response) => {
       where: { streamId },
       data: {
         depositedAmount: newDeposited,
-        lastUpdateTime: Math.floor(Date.now() / 1000),
+        lastUpdateTime: BigInt(Math.floor(Date.now() / 1000)),
       },
     });
 

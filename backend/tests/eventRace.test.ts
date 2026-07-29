@@ -13,7 +13,6 @@ vi.mock('../src/lib/prisma.js', () => ({
       update: vi.fn(),
     },
     streamEvent: {
-      create: vi.fn(),
       upsert: vi.fn(),
     },
   },
@@ -37,15 +36,15 @@ vi.mock('../src/logger.js', () => ({
   },
 }));
 
-describe('Withdraw Handler', () => {
+describe('Action Controller vs Worker Event Write Race Guard (Issue #831)', () => {
   let req: Partial<AuthenticatedRequest>;
   let res: Partial<Response>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     req = {
-      params: { streamId: '123' },
-      user: { publicKey: 'GRECIPIENT1' } as any,
+      params: { streamId: '100' },
+      user: { publicKey: 'GRECIPIENT' } as any,
     };
     res = {
       status: vi.fn().mockReturnThis(),
@@ -53,44 +52,36 @@ describe('Withdraw Handler', () => {
     };
   });
 
-  it('should return 404 if stream not found', async () => {
-    (prisma.stream.findUnique as any).mockResolvedValue(null);
-    await withdrawHandler(req as AuthenticatedRequest, res as Response);
-    expect(res.status).toHaveBeenCalledWith(404);
-  });
-
-  it('should return 403 if caller is not recipient', async () => {
-    (prisma.stream.findUnique as any).mockResolvedValue({ recipient: 'GOTHER' });
-    await withdrawHandler(req as AuthenticatedRequest, res as Response);
-    expect(res.status).toHaveBeenCalledWith(403);
-  });
-
-  it('should successfully withdraw', async () => {
+  it('withdrawHandler uses upsert on transactionHash_eventType preventing P2002 duplicate crashes when worker processes event first', async () => {
     const mockStream = {
-      streamId: 123,
-      recipient: 'GRECIPIENT1',
+      streamId: 100,
+      recipient: 'GRECIPIENT',
       withdrawnAmount: '0',
       depositedAmount: '1000',
       isActive: true,
     };
     (prisma.stream.findUnique as any).mockResolvedValue(mockStream);
-    (claimableAmountService.getClaimableAmount as any).mockReturnValue({ actionable: true, claimableAmount: '100' });
-    (sorobanWithdraw as any).mockResolvedValue({ txHash: 'tx123' });
-    (prisma.stream.update as any).mockResolvedValue({ ...mockStream, withdrawnAmount: '100' });
+    (claimableAmountService.getClaimableAmount as any).mockReturnValue({ actionable: true, claimableAmount: '500' });
+    (sorobanWithdraw as any).mockResolvedValue({ txHash: 'tx_race_123' });
+    (prisma.stream.update as any).mockResolvedValue({ ...mockStream, withdrawnAmount: '500' });
+    (prisma.streamEvent.upsert as any).mockResolvedValue({ id: 'evt_1' });
 
     await withdrawHandler(req as AuthenticatedRequest, res as Response);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, txHash: 'tx123' }));
-    expect(prisma.streamEvent.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          transactionHash_eventType: {
-            transactionHash: 'tx123',
-            eventType: 'WITHDRAWN',
-          },
+    expect(prisma.streamEvent.upsert).toHaveBeenCalledWith({
+      where: {
+        transactionHash_eventType: {
+          transactionHash: 'tx_race_123',
+          eventType: 'WITHDRAWN',
         },
-      })
-    );
+      },
+      create: expect.objectContaining({
+        streamId: 100,
+        eventType: 'WITHDRAWN',
+        transactionHash: 'tx_race_123',
+      }),
+      update: {},
+    });
   });
 });

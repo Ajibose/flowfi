@@ -179,7 +179,8 @@ export class SorobanIndexerService {
       const ratePerSecond = this.readString(value, 'rate_per_second', 'ratePerSecond');
       const depositedAmount = this.readString(value, 'deposited_amount', 'depositedAmount');
       const startTimeRaw = value.start_time ?? value.startTime ?? timestamp;
-      const startTime = Number(startTimeRaw);
+      const startTime = BigInt(startTimeRaw ?? timestamp);
+      const timestampBigInt = BigInt(timestamp);
 
       if (!sender || !recipient || !tokenAddress || !ratePerSecond || !depositedAmount) return;
 
@@ -194,7 +195,7 @@ export class SorobanIndexerService {
           tokenAddress,
           ratePerSecond,
           depositedAmount,
-          lastUpdateTime: Number.isFinite(startTime) ? startTime : timestamp,
+          lastUpdateTime: startTime,
           isActive: true,
         },
         create: {
@@ -205,15 +206,15 @@ export class SorobanIndexerService {
           ratePerSecond,
           depositedAmount,
           withdrawnAmount: '0',
-          startTime: Number.isFinite(startTime) ? startTime : timestamp,
-          lastUpdateTime: Number.isFinite(startTime) ? startTime : timestamp,
+          startTime,
+          lastUpdateTime: startTime,
           isActive: true,
         },
       });
     } else if (eventType === 'CANCELLED') {
       await prisma.stream.updateMany({
         where: { streamId },
-        data: { isActive: false, lastUpdateTime: timestamp },
+        data: { isActive: false, lastUpdateTime: BigInt(timestamp) },
       });
     } else if (eventType === 'WITHDRAWN') {
       const stream = await prisma.stream.findUnique({ where: { streamId } });
@@ -224,7 +225,7 @@ export class SorobanIndexerService {
           where: { streamId },
           data: {
             withdrawnAmount: nextWithdrawn,
-            lastUpdateTime: timestamp,
+            lastUpdateTime: BigInt(timestamp),
             isActive: BigInt(nextWithdrawn) < BigInt(stream.depositedAmount),
           },
         });
@@ -232,7 +233,7 @@ export class SorobanIndexerService {
     } else if (eventType === 'COMPLETED') {
       await prisma.stream.updateMany({
         where: { streamId },
-        data: { isActive: false, lastUpdateTime: timestamp },
+        data: { isActive: false, lastUpdateTime: BigInt(timestamp) },
       });
     }
 
@@ -243,7 +244,7 @@ export class SorobanIndexerService {
         amount: this.readString(value, 'amount'),
         transactionHash: txHash,
         ledgerSequence,
-        timestamp,
+        timestamp: BigInt(timestamp),
         metadata: JSON.stringify({ topic: event.topic, value: event.value }),
       },
     });
