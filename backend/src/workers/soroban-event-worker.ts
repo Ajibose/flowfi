@@ -1,6 +1,6 @@
 import { rpc, xdr, StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "../lib/prisma.js";
-import { INDEXER_STATE_ID } from "../lib/indexer-state.js";
+import { INDEXER_STATE_ID, ensureIndexerState } from "../lib/indexer-state.js";
 import { sseService } from "../services/sse.service.js";
 import logger from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
@@ -189,15 +189,7 @@ export class SorobanEventWorker {
    */
   private async fetchAndProcessEvents(): Promise<void> {
     // Ensure an IndexerState row exists on first run.
-    const state = await prisma.indexerState.upsert({
-      where: { id: INDEXER_STATE_ID },
-      create: {
-        id: INDEXER_STATE_ID,
-        lastLedger: this.startLedger,
-        lastCursor: null,
-      },
-      update: {},
-    });
+    const state = await ensureIndexerState(this.startLedger);
 
     const baseFilter = {
       filters: [
