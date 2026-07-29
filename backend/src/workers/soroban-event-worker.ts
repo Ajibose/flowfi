@@ -377,7 +377,10 @@ export class SorobanEventWorker {
             new_fee_rate_bps: newFeeRateBps,
           }),
         },
-        update: {},
+        update: {
+          ledgerSequence: event.ledger,
+          timestamp,
+        },
       });
     });
 
@@ -428,7 +431,10 @@ export class SorobanEventWorker {
             transactionHash: event.txHash,
           }),
         },
-        update: {},
+        update: {
+          ledgerSequence: event.ledger,
+          timestamp,
+        },
       });
     });
 
@@ -466,13 +472,13 @@ export class SorobanEventWorker {
     const tokenAddress = decodeAddress(body["token_address"]);
     const ratePerSecond = decodeI128(body["rate_per_second"]);
     const depositedAmount = decodeI128(body["deposited_amount"]);
-    const startTime = Number(decodeU64(body["start_time"]));
+    const startTime = BigInt(decodeU64(body["start_time"]));
 
     const ratePerSecondBigInt = BigInt(ratePerSecond);
     const endTime =
       ratePerSecondBigInt === 0n
         ? null
-        : startTime + Number(BigInt(depositedAmount) / ratePerSecondBigInt);
+        : startTime + BigInt(depositedAmount) / ratePerSecondBigInt;
 
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.user.upsert({
@@ -542,7 +548,10 @@ export class SorobanEventWorker {
             timestamp: startTime,
             metadata: JSON.stringify({ tokenAddress, ratePerSecond }),
           },
-          update: {},
+          update: {
+            ledgerSequence: event.ledger,
+            timestamp: startTime,
+          },
         });
       }
     });
@@ -600,9 +609,9 @@ export class SorobanEventWorker {
       const newEndTime =
         ratePerSecondBigInt === 0n
           ? null
-          : stream.startTime +
-            Number(BigInt(newDepositedAmount) / ratePerSecondBigInt) +
-            stream.totalPausedDuration;
+          : BigInt(stream.startTime) +
+            (BigInt(newDepositedAmount) / ratePerSecondBigInt) +
+            BigInt(stream.totalPausedDuration);
 
       await tx.stream.update({
         where: { streamId },
@@ -624,7 +633,10 @@ export class SorobanEventWorker {
           timestamp,
           metadata: JSON.stringify({ newDepositedAmount }),
         },
-        update: {},
+        update: {
+          ledgerSequence: event.ledger,
+          timestamp,
+        },
       });
     });
 
@@ -693,7 +705,10 @@ export class SorobanEventWorker {
           timestamp,
           metadata: JSON.stringify({ recipient }),
         },
-        update: {},
+        update: {
+          ledgerSequence: event.ledger,
+          timestamp,
+        },
       });
     });
 
@@ -762,7 +777,10 @@ export class SorobanEventWorker {
             timestamp,
             metadata: JSON.stringify({ amountWithdrawn, refundedAmount }),
           },
-          update: {},
+          update: {
+            ledgerSequence: event.ledger,
+            timestamp,
+          },
         });
       }
     });
@@ -832,7 +850,10 @@ export class SorobanEventWorker {
             timestamp,
             metadata: JSON.stringify({ recipient }),
           },
-          update: {},
+          update: {
+            ledgerSequence: event.ledger,
+            timestamp,
+          },
         });
       }
     });
@@ -962,7 +983,10 @@ export class SorobanEventWorker {
             timestamp,
             metadata: JSON.stringify({ sender, pausedAt }),
           },
-          update: {},
+          update: {
+            ledgerSequence: event.ledger,
+            timestamp,
+          },
         });
       }
     });
@@ -1053,7 +1077,10 @@ export class SorobanEventWorker {
               totalPausedDuration: newTotalPausedDuration,
             }),
           },
-          update: {},
+          update: {
+            ledgerSequence: event.ledger,
+            timestamp,
+          },
         });
       }
     });
