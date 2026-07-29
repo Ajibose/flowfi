@@ -386,6 +386,74 @@ fn test_create_stream_emits_event() {
     assert_eq!(payload.rate_per_second, 5);
 }
 
+// ─── #796 start_time / backdated timestamp guard ──────────────────────────────
+//
+// `create_stream` always derives `start_time` from `env.ledger().timestamp()`
+// (see lib.rs:201). The contract does NOT accept a caller-supplied start_time,
+// so backdated start times are structurally impossible via the public API.
+//
+// The tests below verify this invariant and demonstrate the risk that would
+// exist if a backdated start_time were accepted.
+
+#[test]
+fn test_create_stream_uses_ledger_timestamp_as_start_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    // Set ledger to a known timestamp.
+    env.ledger().with_mut(|l| l.timestamp = 500_000);
+
+    let client = create_contract(&env);
+    let stream_id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    let s = client.get_stream(&stream_id).unwrap();
+    // start_time must be the ledger timestamp at creation, never caller-supplied.
+    assert_eq!(s.start_time, 500_000);
+    assert_eq!(s.last_update_time, 500_000);
+}
+
+#[test]
+fn test_backdated_start_time_would_immediately_vest_full_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    let stream_id = client.create_stream(&sender, &recipient, &token, &1_000, &1_000);
+
+    // Simulate a backdated start_time by directly manipulating storage.
+    // This is NOT possible through the public API — the contract always uses
+    // env.ledger().timestamp() — but it demonstrates the risk that would exist
+    // if a caller-supplied start_time were ever added.
+    let mut stream = client.get_stream(&stream_id).unwrap();
+    stream.start_time = 0;          // backdated far into the past
+    stream.last_update_time = 0;    // sync anchor to match
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&types::DataKey::Stream(stream_id), &stream);
+    });
+
+    // Advance ledger well past the stream's natural end.
+    env.ledger().with_mut(|l| l.timestamp += 10_000);
+
+    // The full deposited_amout would be immediately claimable because the
+    // elapsed time (start_time=0 → now=10_000) far exceeds the duration.
+    let claimable = client.get_claimable_amount(&stream_id).unwrap();
+    assert_eq!(claimable, 1_000);
+
+    // Backdated start times are intentionally prevented by the contract design:
+    // `create_stream` always uses `env.ledger().timestamp()`, so this scenario
+    // cannot occur via the public API.
+}
+
 // ─── top_up_stream ────────────────────────────────────────────────────────────
 
 #[test]

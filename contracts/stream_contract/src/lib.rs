@@ -1,3 +1,16 @@
+//! # `stream_contract` — Soroban Payment-Streaming Contract
+//!
+//! ## Module responsibilities
+//!
+//! | Module | Responsibility |
+//! |--------|---------------|
+//! | [`lib.rs`](./lib.rs) | Public contract interface (`StreamContract`) — entrypoints exposed via `#[contractimpl]` |
+//! | [`storage.rs`](./storage.rs) | Persistent state — read/write `ProtocolConfig` and `Stream` records to Soroban storage |
+//! | [`types.rs`](./types.rs) | Data types — `Stream`, `ProtocolConfig`, `StreamStatus`, `DataKey` |
+//! | [`errors.rs`](./errors.rs) | Error types — `StreamError` enum with all contract error variants |
+//! | [`events.rs`](./events.rs) | Event payloads — typed structs emitted by each entrypoint |
+//! | [`test.rs`](./test.rs) | Unit & integration tests — module gated behind `#[cfg(test)]` |
+
 #![no_std]
 #![doc = include_str!("../README.md")]
 
