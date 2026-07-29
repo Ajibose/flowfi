@@ -126,6 +126,20 @@ function getServer(): rpc.Server {
   return _server;
 }
 
+/**
+ * Lightweight connectivity check used by the /health endpoint.
+ * Calls the RPC server's getHealth() with a bounded timeout so a slow or
+ * unreachable Soroban RPC endpoint can't hang the health check.
+ */
+export async function checkRpcHealth(timeoutMs = 3_000): Promise<boolean> {
+  try {
+    await withRpcTimeout('soroban rpc health check', () => getServer().getHealth(), timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function setServer(server: rpc.Server): void {
   _server = server;
 }
