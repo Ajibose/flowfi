@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAdmin } from '../../middleware/auth.js';
+import { adminRateLimiter } from '../../middleware/admin-rate-limiter.middleware.js';
 import {
   getIndexerStatus,
   resetIndexer,
   replayFromLedger,
 } from '../../services/indexerService.js';
 
-import { prisma } from '../../lib/prisma.js';
+import { prisma, pool } from '../../lib/prisma.js';
+import { getPoolMetrics } from '../../lib/pg-pool.js';
 import { INDEXER_STATE_ID } from '../../lib/indexer-state.js';
 import { sseService } from '../../services/sse.service.js';
 import { cache } from '../../lib/redis.js';
@@ -17,6 +19,7 @@ const router = Router();
 
 // All admin routes require admin JWT
 router.use(requireAdmin);
+router.use(adminRateLimiter);
 
 /**
  * @openapi
@@ -131,6 +134,7 @@ async function buildAdminMetrics() {
     },
     sse: { activeConnections: sseService.getClientCount() },
     cache: cache.getStats(),
+    pgPool: getPoolMetrics(pool),
     indexer: {
       lastLedger: indexerState?.lastLedger ?? 0,
       lagSeconds,
