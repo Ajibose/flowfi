@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { BackendStreamEvent } from "@/lib/api-types";
-import { formatAmount } from "@/lib/amount";
+import { formatAmount } from "@/utils/amount";
 import TransactionTracker from "@/components/TransactionTracker";
 import { Download, ExternalLink, Clock } from "lucide-react";
 import { Button } from "../ui/Button";
