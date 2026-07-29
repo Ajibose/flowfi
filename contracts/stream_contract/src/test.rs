@@ -1,5 +1,7 @@
 extern crate std;
 
+use std::string::ToString;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -2621,5 +2623,77 @@ fn test_cancel_state_committed_before_transfers_prevents_double_cancel() {
     assert_eq!(
         token_client.balance(&recipient) + token_client.balance(&sender),
         s.deposited_amount
+    );
+}
+
+// ─── Event Wire Format Regression Guard ───────────────────────────────────────
+//
+// Pins the exact Map field names emitted for each event's `data` payload, as
+// read by `decodeMap()` in `backend/src/workers/soroban-event-worker.ts`. If a
+// field is renamed or removed here without updating the matching decoder in
+// `soroban-event-worker.ts`, this test fails before the mismatch reaches
+// production. See the mirrored field/type table in
+// `backend/tests/events-wire-format.test.ts`.
+
+/// Returns the sorted field names of a `#[contracttype]` event payload,
+/// independent of struct field declaration order.
+fn event_field_names(env: &Env, payload: &soroban_sdk::Val) -> std::vec::Vec<std::string::String> {
+    let map = soroban_sdk::Map::<Symbol, soroban_sdk::Val>::try_from_val(env, payload)
+        .expect("event data is not a Map");
+    let mut names: std::vec::Vec<std::string::String> = map
+        .keys()
+        .iter()
+        .map(|sym| sym.to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn test_stream_created_event_field_names_match_decoder_expectations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (token, _) = create_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+
+    let client = create_contract(&env);
+    client.create_stream(&sender, &recipient, &token, &500, &100);
+
+    let events = env.events().all();
+    let ev = events
+        .iter()
+        .find(|e| {
+            Symbol::try_from_val(&env, &e.1.get(0).unwrap()).unwrap()
+                == Symbol::new(&env, "stream_created")
+        })
+        .expect("stream_created event not found");
+
+    let mut names = event_field_names(&env, &ev.2);
+    names.sort();
+
+    // Must match the fields `handleStreamCreated` in soroban-event-worker.ts
+    // reads via `decodeMap`: sender, recipient, token_address, rate_per_second,
+    // deposited_amount, start_time. `stream_id` is also present in the data
+    // map (StreamCreatedEvent's first field) but the worker reads it from the
+    // topic instead, via `streamIdTopic`.
+    let mut expected: std::vec::Vec<std::string::String> = std::vec::Vec::from([
+        "sender",
+        "recipient",
+        "token_address",
+        "rate_per_second",
+        "deposited_amount",
+        "start_time",
+        "stream_id",
+    ])
+    .iter()
+    .map(|s| std::string::String::from(*s))
+    .collect();
+    expected.sort();
+
+    assert_eq!(
+        names, expected,
+        "stream_created event fields drifted from soroban-event-worker.ts's decodeMap expectations"
     );
 }
