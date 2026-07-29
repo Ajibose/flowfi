@@ -31,6 +31,24 @@ We use Prisma as our ORM to interact with PostgreSQL.
 - Schema is located at `prisma/schema.prisma`.
 - Run `npx prisma studio` to view the database through a web UI.
 
+## Database Seeding
+
+Run the seed script to populate the database with demo data for local development:
+
+```bash
+npx prisma db seed
+```
+
+**Idempotency guarantee** – The seed script (`prisma/seed.ts`) is safe to run multiple times against the same database. Every record is written with `upsert()` rather than `create()`:
+
+| Model | Unique key used for upsert |
+|---|---|
+| `User` | `publicKey` |
+| `Stream` | `streamId` |
+| `StreamEvent` | `transactionHash` + `eventType` |
+
+Re-running the seed against a populated database will leave existing rows unchanged and will not throw unique-constraint errors or create duplicate rows.
+
 ## /v1 API
 
 All REST API endpoints are prefixed with `/v1`. Refer to the API Documentation in the root `README.md` and the `docs/` folder for versioning and authentication details.
