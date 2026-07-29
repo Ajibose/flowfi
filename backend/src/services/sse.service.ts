@@ -1,5 +1,6 @@
+import { randomUUID } from 'crypto';
 import type { Response } from 'express';
-import logger from '../logger.js';
+import logger, { requestContext } from '../logger.js';
 import { isRedisAvailable, getPublisher, getSubscriber } from '../lib/redis.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -29,6 +30,13 @@ export class SSEService {
   private readonly ipConnectionCounts: Map<string, number> = new Map();
   private shuttingDown = false;
   private perIpPeakConnections = 0;
+
+  /**
+   * Stable id attached to every log line emitted by the heartbeat
+   * setInterval callback, since it fires outside of any HTTP request and
+   * would otherwise have no requestContext (and thus no correlation id).
+   */
+  private readonly heartbeatWorkerId = `sse-heartbeat:${randomUUID()}`;
 
   private readonly maxConnections: number = (() => {
     const parsed = Number.parseInt(process.env.MAX_SSE_CONNECTIONS ?? '10000', 10);
@@ -207,7 +215,9 @@ export class SSEService {
     }
 
     this.heartbeatTimer = setInterval(() => {
-      this.sendHeartbeat();
+      requestContext.run({ requestId: this.heartbeatWorkerId }, () => {
+        this.sendHeartbeat();
+      });
     }, HEARTBEAT_INTERVAL_MS);
   }
 

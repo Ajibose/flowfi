@@ -1,8 +1,9 @@
+import { randomUUID } from "crypto";
 import { rpc, xdr, StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "../lib/prisma.js";
 import { INDEXER_STATE_ID } from "../lib/indexer-state.js";
 import { sseService } from "../services/sse.service.js";
-import logger from "../logger.js";
+import logger, { requestContext } from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -78,6 +79,13 @@ export class SorobanEventWorker {
   private isRunning = false;
   private pollTimer: NodeJS.Timeout | undefined;
   private activeBatch: Promise<void> | null = null;
+
+  /**
+   * Stable id attached to every log line emitted by the background poll
+   * loop, since these callbacks fire outside of any HTTP request and would
+   * otherwise have no requestContext (and thus no correlation id) at all.
+   */
+  private readonly workerId = `soroban-worker:${randomUUID()}`;
 
   constructor() {
     const rpcUrl =
@@ -172,15 +180,22 @@ export class SorobanEventWorker {
   }
 
   private async poll(): Promise<void> {
-    this.activeBatch = this.fetchAndProcessEvents().catch((err) => {
-      logger.error("[SorobanWorker] Unhandled error during poll:", err);
+    // Run every poll cycle inside its own AsyncLocalStorage context so that
+    // logs emitted from this setTimeout-driven callback (and anything it
+    // awaits, including the DB/RPC calls in fetchAndProcessEvents) carry a
+    // stable worker-scoped correlation id instead of silently dropping out
+    // of context.
+    await requestContext.run({ requestId: this.workerId }, async () => {
+      this.activeBatch = this.fetchAndProcessEvents().catch((err) => {
+        logger.error("[SorobanWorker] Unhandled error during poll:", err);
+      });
+      try {
+        await this.activeBatch;
+      } finally {
+        this.activeBatch = null;
+        this.scheduleNext();
+      }
     });
-    try {
-      await this.activeBatch;
-    } finally {
-      this.activeBatch = null;
-      this.scheduleNext();
-    }
   }
 
   /**
