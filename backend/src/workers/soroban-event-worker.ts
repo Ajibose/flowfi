@@ -1125,11 +1125,9 @@ export class SorobanEventWorker {
         select: { pausedAt: true, totalPausedDuration: true },
       });
 
-      // Calculate the duration of this pause interval
-      let additionalPausedDuration = 0;
-      if (currentStream.pausedAt) {
-        additionalPausedDuration = timestamp - currentStream.pausedAt;
-      }
+      const additionalPausedDuration = currentStream.pausedAt
+        ? timestamp - Number(currentStream.pausedAt)
+        : 0;
 
       const newTotalPausedDuration =
         currentStream.totalPausedDuration + additionalPausedDuration;
