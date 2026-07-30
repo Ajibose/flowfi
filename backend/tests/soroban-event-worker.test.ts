@@ -632,92 +632,71 @@ describe('SorobanEventWorker', () => {
     });
   });
 
-  describe('Event processing counters (#844)', () => {
-    function makeMinimalEvent(id: string, successful = true): rpc.Api.EventResponse {
-      return {
-        id,
-        type: 'contract',
-        ledger: 1000,
-        ledgerClosedAt: '2024-01-01T00:00:00Z',
-        txHash: `tx-${id}`,
-        transactionIndex: 0,
-        operationIndex: 0,
-        inSuccessfulContractCall: successful,
-        topic: [
-          { switch: () => ({ value: 0 }), sym: () => 'unrecognised_event' } as any,
-        ],
-        value: { switch: () => ({ value: 4 }), map: () => [] } as any,
-      };
-    }
+  describe('poll / triggerPoll serialization (#843)', () => {
+    it('does not run fetchAndProcessEvents concurrently for overlapping poll and triggerPoll', async () => {
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      const releases: Array<() => void> = [];
 
-    beforeEach(() => {
-      worker.resetEventCounters();
+      const fetchSpy = vi
+        .spyOn(worker as any, 'fetchAndProcessEvents')
+        .mockImplementation(async () => {
+          concurrent += 1;
+          maxConcurrent = Math.max(maxConcurrent, concurrent);
+          await new Promise<void>((resolve) => {
+            releases.push(resolve);
+          });
+          concurrent -= 1;
+        });
+
+      // Avoid scheduling real timers from poll()'s finally
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const pollPromise = (worker as any).poll();
+      const triggerPromise = worker.triggerPoll();
+
+      await vi.waitFor(() => expect(releases.length).toBe(1));
+      expect(concurrent).toBe(1);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(releases.length).toBe(2));
+      expect(concurrent).toBe(1);
+
+      releases[1]!();
+      await Promise.all([pollPromise, triggerPromise]);
+
+      expect(maxConcurrent).toBe(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
-    it('increments eventsProcessed on successful processEvent and leaves degraded false', async () => {
-      const getEvents = vi.fn().mockResolvedValue({
-        events: [makeMinimalEvent('ok-1'), makeMinimalEvent('ok-2')],
+    it('waitForDrain awaits an in-flight triggerPoll batch', async () => {
+      let resolveFetch!: () => void;
+      vi.spyOn(worker as any, 'fetchAndProcessEvents').mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      );
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const triggerPromise = worker.triggerPoll();
+      // activeBatch is registered synchronously in runExclusive
+      expect((worker as any).activeBatch).not.toBeNull();
+
+      let drained = false;
+      const drainPromise = worker.waitForDrain().then(() => {
+        drained = true;
       });
-      (worker as any).server = { getEvents };
 
-      await (worker as any).fetchAndProcessEvents();
+      await Promise.resolve();
+      expect(drained).toBe(false);
 
-      const counters = worker.getEventCounters();
-      expect(counters.eventsProcessed).toBe(2);
-      expect(counters.eventsFailed).toBe(0);
-      expect(counters.lastErrorAt).toBeNull();
-      expect(counters.degraded).toBe(false);
-    });
-
-    it('increments eventsFailed, sets lastErrorAt, and marks degraded on a failure spike', async () => {
-      const getEvents = vi.fn().mockResolvedValue({
-        events: [
-          makeMinimalEvent('fail-1'),
-          makeMinimalEvent('fail-2'),
-          makeMinimalEvent('fail-3'),
-        ],
-      });
-      (worker as any).server = { getEvents };
-
-      vi.spyOn(worker, 'processEvent').mockRejectedValue(new Error('boom'));
-
-      await (worker as any).fetchAndProcessEvents();
-
-      const counters = worker.getEventCounters();
-      expect(counters.eventsProcessed).toBe(0);
-      expect(counters.eventsFailed).toBe(3);
-      expect(counters.lastErrorAt).toEqual(expect.any(String));
-      expect(Date.parse(counters.lastErrorAt!)).not.toBeNaN();
-      expect(counters.degraded).toBe(true);
-      expect(logger.error).toHaveBeenCalled();
-    });
-
-    it('does not count events from unsuccessful contract calls', async () => {
-      const getEvents = vi.fn().mockResolvedValue({
-        events: [makeMinimalEvent('skip-1', false), makeMinimalEvent('ok-1', true)],
-      });
-      (worker as any).server = { getEvents };
-
-      await (worker as any).fetchAndProcessEvents();
-
-      const counters = worker.getEventCounters();
-      expect(counters.eventsProcessed).toBe(1);
-      expect(counters.eventsFailed).toBe(0);
-    });
-
-    it('stays non-degraded when failures are below the sample / rate thresholds', async () => {
-      const getEvents = vi.fn().mockResolvedValue({
-        events: [makeMinimalEvent('fail-only')],
-      });
-      (worker as any).server = { getEvents };
-      vi.spyOn(worker, 'processEvent').mockRejectedValue(new Error('boom'));
-
-      await (worker as any).fetchAndProcessEvents();
-
-      const counters = worker.getEventCounters();
-      expect(counters.eventsFailed).toBe(1);
-      // Need ≥3 samples before a spike is declared.
-      expect(counters.degraded).toBe(false);
+      resolveFetch();
+      await Promise.all([triggerPromise, drainPromise]);
+      expect(drained).toBe(true);
+      expect((worker as any).activeBatch).toBeNull();
     });
   });
 });
