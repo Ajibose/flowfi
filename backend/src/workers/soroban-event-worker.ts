@@ -1005,7 +1005,7 @@ export class SorobanEventWorker {
     }
 
     const sender = decodeAddress(body["sender"]);
-    const newEndTime = Number(decodeU64(body["new_end_time"]));
+    const newEndTime = decodeU64(body["new_end_time"]);
     const timestamp = Math.floor(Date.now() / 1000);
 
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -1018,7 +1018,7 @@ export class SorobanEventWorker {
       // Calculate the duration of this pause interval
       let additionalPausedDuration = 0;
       if (currentStream.pausedAt) {
-        additionalPausedDuration = timestamp - currentStream.pausedAt;
+        additionalPausedDuration = timestamp - Number(currentStream.pausedAt);
       }
 
       const newTotalPausedDuration =
@@ -1064,7 +1064,7 @@ export class SorobanEventWorker {
             timestamp,
             metadata: JSON.stringify({
               sender,
-              newEndTime,
+              newEndTime: newEndTime.toString(),
               pausedDuration: additionalPausedDuration,
               totalPausedDuration: newTotalPausedDuration,
             }),
@@ -1080,7 +1080,7 @@ export class SorobanEventWorker {
     sseService.broadcastToStream(String(streamId), "stream.resumed", {
       streamId,
       sender,
-      newEndTime,
+      newEndTime: newEndTime.toString(),
       transactionHash: event.txHash,
       ledger: event.ledger,
       timestamp,

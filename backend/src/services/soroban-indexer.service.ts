@@ -179,8 +179,13 @@ export class SorobanIndexerService {
       const ratePerSecond = this.readString(value, 'rate_per_second', 'ratePerSecond');
       const depositedAmount = this.readString(value, 'deposited_amount', 'depositedAmount');
       const startTimeRaw = value.start_time ?? value.startTime ?? timestamp;
-      const startTime = BigInt(startTimeRaw ?? timestamp);
-      const timestampBigInt = BigInt(timestamp);
+      const startTime = BigInt(
+        typeof startTimeRaw === 'string' ||
+          typeof startTimeRaw === 'number' ||
+          typeof startTimeRaw === 'bigint'
+          ? startTimeRaw
+          : timestamp,
+      );
 
       if (!sender || !recipient || !tokenAddress || !ratePerSecond || !depositedAmount) return;
 

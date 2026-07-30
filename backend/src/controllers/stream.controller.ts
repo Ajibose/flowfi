@@ -211,7 +211,7 @@ export const createStream = async (req: Request, res: Response) => {
       },
     });
 
-    return res.status(201).json(stream);
+    return res.status(201).json(JSON.parse(JSON.stringify(stream, (_key, value) => typeof value === "bigint" ? value.toString() : value)));
   } catch (error) {
     if (
       error instanceof RangeError ||

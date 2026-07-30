@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -31,6 +32,7 @@ describe("useIncomingStreams hooks", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     queryClient.clear();
   });
 
@@ -89,6 +91,7 @@ describe("useIncomingStreams hooks", () => {
       );
 
       const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+      vi.useFakeTimers();
 
       await act(async () => {
         await result.current.mutateAsync({
@@ -102,12 +105,14 @@ describe("useIncomingStreams hooks", () => {
         } as any);
       });
 
-      // Wait for pollIndexerForWithdraw to complete and call invalidateQueries
-      await waitFor(() => {
-        expect(invalidateSpy).toHaveBeenCalledWith({
-          queryKey: incomingStreamsQueryKey("pubkey"),
-        });
-      }, { timeout: 10000 });
+      // Advance the retry delays so the fallback invalidation runs immediately.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(63_000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: incomingStreamsQueryKey("pubkey"),
+      });
     });
   });
 });
