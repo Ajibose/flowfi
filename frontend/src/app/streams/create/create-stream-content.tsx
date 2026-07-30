@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { logger } from "@/lib/logger";
 import {
   createStream,
@@ -14,10 +14,52 @@ import { hasValidPrecision, validateAmountInput } from "@/utils/amount";
 import { toast } from "react-hot-toast";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FileText, X } from "lucide-react";
 import { useWallet } from "@/context/wallet-context";
 
 const TOKEN_DECIMALS = 7;
+const DRAFT_STORAGE_KEY = "flowfi.create-stream.draft.v1";
+
+interface StreamDraft {
+  recipient: string;
+  token: string;
+  amount: string;
+  duration: string;
+  savedAt: number;
+}
+
+function saveDraftToSession(data: StreamDraft): void {
+  try {
+    if (typeof window === "undefined") return;
+    sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // sessionStorage may be full or unavailable
+  }
+}
+
+function loadDraftFromSession(): StreamDraft | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = sessionStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StreamDraft;
+    if (parsed && typeof parsed.recipient === "string") {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clearDraft(): void {
+  try {
+    if (typeof window === "undefined") return;
+    sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 export default function CreateStreamContent() {
   const { status, session } = useWallet();
@@ -26,16 +68,59 @@ export default function CreateStreamContent() {
   const [nowTimestamp] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [txState, setTxState] = useState<"idle" | "signing" | "submitted" | "confirming">("idle");
-  const [formData, setFormData] = useState({
-    recipient: "",
-    token: "XLM",
-    amount: "",
-    duration: "30",
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [dismissedDraftBanner, setDismissedDraftBanner] = useState(false);
+
+  const [formData, setFormData] = useState<{
+    recipient: string;
+    token: string;
+    amount: string;
+    duration: string;
+  }>(() => {
+    // Restore draft from sessionStorage on initial mount
+    const draft = loadDraftFromSession();
+    if (draft) {
+      return {
+        recipient: draft.recipient,
+        token: draft.token,
+        amount: draft.amount,
+        duration: draft.duration,
+      };
+    }
+    return {
+      recipient: "",
+      token: "XLM",
+      amount: "",
+      duration: "30",
+    };
   });
 
+  // Set flag if a draft was restored
+  useEffect(() => {
+    const draft = loadDraftFromSession();
+    if (draft) {
+      setDraftRestored(true);
+    }
+  }, []);
+
+  // Persist form data to sessionStorage whenever it changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveDraftToSession({
+        recipient: formData.recipient,
+        token: formData.token,
+        amount: formData.amount,
+        duration: formData.duration,
+        savedAt: Date.now(),
+      });
+    }, 500); // debounce writes
+    return () => clearTimeout(timer);
+  }, [formData]);
+
+  // Handle recipient prefill from search params — but only if no draft is restored
   useEffect(() => {
     const recipientParam = searchParams.get("recipient");
-    if (!recipientParam) return;
+    if (!recipientParam || draftRestored) return;
 
     import("@stellar/stellar-sdk").then(({ StrKey }) => {
       if (StrKey.isValidEd25519PublicKey(recipientParam)) {
@@ -44,7 +129,7 @@ export default function CreateStreamContent() {
         logger.warn("Ignoring malformed recipient query param", { recipientParam });
       }
     });
-  }, [searchParams]);
+  }, [searchParams, draftRestored]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,6 +161,7 @@ export default function CreateStreamContent() {
 
       if (result.success) {
         setTxState("confirming");
+        clearDraft(); // Clear draft on successful submission
         toast.success("Stream created successfully!");
         setTimeout(() => {
           router.push("/dashboard");
@@ -104,15 +190,53 @@ export default function CreateStreamContent() {
     ? validateAmountInput(formData.amount, TOKEN_DECIMALS)
     : null;
 
+  const handleDismissDraft = useCallback(() => {
+    clearDraft();
+    setDraftRestored(false);
+    setDismissedDraftBanner(true);
+    setFormData({
+      recipient: "",
+      token: "XLM",
+      amount: "",
+      duration: "30",
+    });
+  }, []);
+
+  const handleBack = useCallback(() => {
+    // Navigate back without clearing the draft so it persists across navigation
+    router.push("/dashboard");
+  }, [router]);
+
   return (
     <div className="container mx-auto max-w-2xl px-4 py-12">
-      <Link
-        href="/dashboard"
+      <button
+        onClick={handleBack}
         className="mb-8 inline-flex items-center text-sm font-medium text-slate-400 hover:text-white transition-colors"
       >
         <ArrowLeft className="mr-2 h-4 w-4" />
         Back to Dashboard
-      </Link>
+      </button>
+
+      {/* Resume draft banner */}
+      {draftRestored && !dismissedDraftBanner && (
+        <div className="mb-6 flex items-center gap-3 rounded-2xl border border-accent/30 bg-accent/10 px-5 py-4 text-sm">
+          <FileText className="h-5 w-5 text-accent flex-shrink-0" />
+          <span className="flex-1">
+            Resumed a saved draft from{" "}
+            {new Date(
+              loadDraftFromSession()?.savedAt ?? Date.now()
+            ).toLocaleTimeString()}
+            . You can continue editing or start fresh.
+          </span>
+          <button
+            onClick={handleDismissDraft}
+            className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+          >
+            <X className="h-3.5 w-3.5" />
+            Discard Draft
+          </button>
+        </div>
+      )}
 
       <div className="glass-card rounded-3xl border-slate-800 p-8">
         <h1 className="mb-2 text-3xl font-bold">Create New Stream</h1>
