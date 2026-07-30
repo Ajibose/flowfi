@@ -142,7 +142,7 @@ function readStoredSession(): WalletSession | null {
     return null;
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = window.localStorage.getItem(STORAGE_KEY)?.trim();
   if (!raw) {
     return null;
   }
