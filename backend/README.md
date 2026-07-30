@@ -6,6 +6,8 @@ This is the Node.js / Express backend for FlowFi. It provides the REST API for t
 
 - `npm install`: Installs dependencies.
 - `npm run dev`: Starts the development server using nodemon.
+  
+  > **Note:** nodemon watches only the `src/` directory for changes. Tests live in the `tests/` directory (outside the watch scope), so they never trigger server reloads. If tests were ever colocated inside `src/` in the future, add ignore patterns (e.g. `src/**/*.test.ts`) to nodemon.json to prevent unwanted restarts.
 - `npm run build`: Compiles TypeScript to JavaScript.
 - `npm start`: Runs the compiled server.
 - `npm run db:push`: Pushes Prisma schema changes to the database.
