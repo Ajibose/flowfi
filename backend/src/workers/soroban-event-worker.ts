@@ -4,6 +4,7 @@ import { INDEXER_STATE_ID, ensureIndexerState } from "../lib/indexer-state.js";
 import { sseService } from "../services/sse.service.js";
 import logger from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
+import "../lib/stream-id.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -248,9 +249,9 @@ export class SorobanEventWorker {
       update: {},
     });
     await tx.stream.upsert({
-      where: { streamId: 0 },
+      where: { streamId: 0n },
       create: {
-        streamId: 0,
+        streamId: 0n,
         sender: systemUser,
         recipient: systemUser,
         tokenAddress:
@@ -457,7 +458,7 @@ export class SorobanEventWorker {
           },
         },
         create: {
-          streamId: 0,
+          streamId: 0n,
           eventType: "FEE_CONFIG_UPDATED",
           transactionHash: event.txHash,
           ledgerSequence: event.ledger,
@@ -513,7 +514,7 @@ export class SorobanEventWorker {
           },
         },
         create: {
-          streamId: 0,
+          streamId: 0n,
           eventType: "ADMIN_TRANSFERRED",
           transactionHash: event.txHash,
           ledgerSequence: event.ledger,
@@ -546,7 +547,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (
@@ -666,7 +667,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["amount"] || !body["new_deposited_amount"]) {
@@ -747,7 +748,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["recipient"] || !body["amount"] || !body["timestamp"]) {
@@ -819,7 +820,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["amount_withdrawn"] || !body["refunded_amount"]) {
@@ -892,7 +893,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["recipient"] || !body["total_withdrawn"]) {
@@ -965,7 +966,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["treasury"] || !body["fee_amount"] || !body["token"]) {
@@ -1026,7 +1027,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["sender"] || !body["paused_at"]) {
@@ -1098,7 +1099,7 @@ export class SorobanEventWorker {
     event: rpc.Api.EventResponse,
     streamIdTopic: xdr.ScVal,
   ): Promise<void> {
-    const streamId = Number(decodeU64(streamIdTopic));
+    const streamId = decodeU64(streamIdTopic);
     const body = decodeMap(event.value);
 
     if (!body["sender"] || !body["new_end_time"]) {
