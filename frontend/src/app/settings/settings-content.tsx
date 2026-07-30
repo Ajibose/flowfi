@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Copy, Check, LogOut, Moon, Sun, Bell, Globe } from "lucide-react";
 import { STELLAR_NETWORK, shortenPublicKey } from "@/lib/wallet";
 import { useWallet } from "@/context/wallet-context";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { formatNetwork } from "@/lib/wallet";
 import toast from "react-hot-toast";
 import { getApiBaseUrl } from "@/lib/api/_shared";
@@ -17,6 +16,12 @@ type DecimalPlaces = 2 | 4 | 7;
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "1.0.0";
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_STREAMING_CONTRACT || "CDV4K...7ZQY";
 const INDEXER_URL = `${getApiBaseUrl()}/v1`;
+
+function useDirtyTracker(initial: Record<string, unknown>, current: Record<string, unknown>): boolean {
+  return useMemo(() => {
+    return Object.keys(initial).some((key) => initial[key] !== current[key]);
+  }, [initial, current]);
+}
 
 export default function SettingsContent() {
   const router = useRouter();
@@ -64,6 +69,51 @@ export default function SettingsContent() {
 
   const [copied, setCopied] = useState(false);
 
+  // ── Track initial values for dirty detection ──────────────────────────
+  const initialValuesRef = useRef({
+    browserPush: false,
+    theme: theme as string,
+    displayCurrency: displayCurrency as string,
+    amountFormat: amountFormat as string,
+    decimalPlaces: decimalPlaces as number,
+  });
+
+  const currentValues = {
+    browserPush,
+    theme,
+    displayCurrency,
+    amountFormat,
+    decimalPlaces,
+  };
+
+  const isDirty = useDirtyTracker(initialValuesRef.current, currentValues);
+
+  // ── beforeunload handler for tab close / refresh / back ───────────────
+  useEffect(() => {
+    if (!isDirty) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
+
+  // ── Confirm before internal navigation ────────────────────────────────
+  const navigateWithConfirm = useCallback(
+    (path: string) => {
+      if (isDirty) {
+        const confirmed = window.confirm(
+          "You have unsaved changes. Are you sure you want to leave?"
+        );
+        if (!confirmed) return;
+      }
+      router.push(path);
+    },[isDirty, router]
+  );
+
   const toggleTheme = (newTheme: "light" | "dark" | "system") => {
     setTheme(newTheme);
     localStorage.setItem("flowfi-theme", newTheme);
@@ -75,6 +125,19 @@ export default function SettingsContent() {
     }
   };
 
+  // ── Confirm-aware disconnect ──────────────────────────────────────────
+  const handleDisconnectWithConfirm = useCallback(() => {
+    if (isDirty) {
+      const confirmed = window.confirm(
+        "You have unsaved changes. Are you sure you want to disconnect?"
+      );
+      if (!confirmed) return;
+    }
+    disconnect();
+    toast.success("Wallet disconnected");
+    router.push("/");
+  }, [isDirty, disconnect, router]);
+
   const copyAddress = async () => {
     if (session?.publicKey) {
       await navigator.clipboard.writeText(session.publicKey);
@@ -84,13 +147,10 @@ export default function SettingsContent() {
     }
   };
 
-  const handleDisconnect = () => {
-    disconnect();
-    toast.success("Wallet disconnected");
-    router.push("/");
-  };
+
 
   const handleBrowserPushToggle = async () => {
+    // toggling notifications is tracked by isDirty via browserPush state
     if (!browserPush) {
       try {
         await Notification.requestPermission();
@@ -360,9 +420,12 @@ export default function SettingsContent() {
               </p>
               <div className="flex items-center justify-between bg-black/40 dark:bg-white/40 px-5 py-4 rounded-xl text-white dark:text-black border border-white/10 dark:border-black/10">
                 <span>Not connected</span>
-                <Link href="/" className="text-accent hover:opacity-80 transition font-semibold">
+                <button
+                  onClick={() => navigateWithConfirm("/")}
+                  className="text-accent hover:opacity-80 transition font-semibold bg-transparent border-none cursor-pointer"
+                >
                   Connect Wallet
-                </Link>
+                </button>
               </div>
             </div>
           )}
@@ -422,7 +485,7 @@ export default function SettingsContent() {
           {/* Disconnect */}
           {session && (
             <button
-              onClick={handleDisconnect}
+              onClick={handleDisconnectWithConfirm}
               className="w-full flex items-center justify-center gap-2 bg-red-600/90 hover:bg-red-600 transition px-4 py-3 rounded-xl text-white font-medium shadow-lg hover:shadow-red-500/30"
             >
               <LogOut size={18} />
