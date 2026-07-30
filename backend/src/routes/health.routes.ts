@@ -65,6 +65,39 @@ const router = Router();
  *                   type: number
  *                   description: Server uptime in seconds
  *                   example: 3600
+ *                 checks:
+ *                   type: object
+ *                   description: Per-subsystem status breakdown, so callers can tell "DB unreachable" apart from "indexer lagging" instead of inferring it from the top-level status alone.
+ *                   properties:
+ *                     database:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           enum: [ok, down]
+ *                     indexer:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           enum: [ok, degraded, disabled]
+ *                         enabled:
+ *                           type: boolean
+ *                         lagSeconds:
+ *                           type: integer
+ *                           nullable: true
+ *                     redis:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           enum: [ok, unavailable, not_configured]
+ *                     sorobanRpc:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           enum: [ok, down]
  *       503:
  *         description: Service is degraded or unhealthy
  */
@@ -104,6 +137,15 @@ router.get('/', async (_req: Request, res: Response) => {
     dbStatus === 'connected' && !indexerLagDegraded && !indexerFailureDegraded;
   const status = isHealthy ? 'ok' : 'degraded';
 
+  // Redis is optional (single-instance SSE mode falls back gracefully when it's
+  // absent), so its status never affects the top-level `isHealthy` verdict.
+  const redisConfigured = !!process.env.REDIS_URL;
+  const redisStatus = !redisConfigured ? 'not_configured' : isRedisAvailable() ? 'ok' : 'unavailable';
+
+  // Soroban RPC reachability is reported for observability only — it does not
+  // gate liveness, since a transient RPC blip shouldn't take the service down.
+  const sorobanRpcOk = await checkRpcHealth();
+
   res.status(isHealthy ? 200 : 503).json({
     status,
     db: dbStatus,
@@ -114,6 +156,22 @@ router.get('/', async (_req: Request, res: Response) => {
     lastErrorAt: eventCounters.lastErrorAt,
     indexerDegraded: eventCounters.degraded,
     uptime: process.uptime(),
+    checks: {
+      database: {
+        status: dbStatus === 'connected' ? 'ok' : 'down',
+      },
+      indexer: {
+        status: !indexerEnabled ? 'disabled' : indexerDegraded ? 'degraded' : 'ok',
+        enabled: indexerEnabled,
+        lagSeconds: indexerLag === -1 ? null : indexerLag,
+      },
+      redis: {
+        status: redisStatus,
+      },
+      sorobanRpc: {
+        status: sorobanRpcOk ? 'ok' : 'down',
+      },
+    },
   });
 });
 
