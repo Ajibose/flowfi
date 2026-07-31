@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { logger } from "@/lib/logger";
 import {
   createStream,
@@ -12,7 +12,7 @@ import {
 } from "@/lib/soroban";
 import { hasValidPrecision, validateAmountInput } from "@/utils/amount";
 import { toast } from "react-hot-toast";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { useWallet } from "@/context/wallet-context";
@@ -22,6 +22,7 @@ const TOKEN_DECIMALS = 7;
 export default function CreateStreamContent() {
   const { status, session } = useWallet();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [nowTimestamp] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [txState, setTxState] = useState<"idle" | "signing" | "submitted" | "confirming">("idle");
@@ -31,6 +32,19 @@ export default function CreateStreamContent() {
     amount: "",
     duration: "30",
   });
+
+  useEffect(() => {
+    const recipientParam = searchParams.get("recipient");
+    if (!recipientParam) return;
+
+    import("@stellar/stellar-sdk").then(({ StrKey }) => {
+      if (StrKey.isValidEd25519PublicKey(recipientParam)) {
+        setFormData((prev) => ({ ...prev, recipient: recipientParam }));
+      } else {
+        logger.warn("Ignoring malformed recipient query param", { recipientParam });
+      }
+    });
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -108,10 +122,11 @@ export default function CreateStreamContent() {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-300">
+            <label htmlFor="recipient" className="text-sm font-medium text-slate-300">
               Recipient Address
             </label>
             <input
+              id="recipient"
               type="text"
               placeholder="G..."
               className="w-full rounded-xl border border-slate-800 bg-slate-900/50 p-4 outline-none focus:border-accent transition-colors"
@@ -123,10 +138,11 @@ export default function CreateStreamContent() {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-300">
+              <label htmlFor="create-stream-token" className="text-sm font-medium text-slate-300">
                 Token
               </label>
               <select
+                id="create-stream-token"
                 className="w-full rounded-xl border border-slate-800 bg-slate-900/50 p-4 outline-none focus:border-accent transition-colors appearance-none"
                 value={formData.token}
                 onChange={(e) => setFormData({ ...formData, token: e.target.value })}
@@ -139,10 +155,11 @@ export default function CreateStreamContent() {
               </select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-300">
+              <label htmlFor="create-stream-amount" className="text-sm font-medium text-slate-300">
                 Total Amount
               </label>
               <input
+                id="create-stream-amount"
                 type="text"
                 inputMode="decimal"
                 placeholder="0.00"
@@ -165,10 +182,11 @@ export default function CreateStreamContent() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-300">
+            <label htmlFor="create-stream-duration" className="text-sm font-medium text-slate-300">
               Duration (Days)
             </label>
             <input
+              id="create-stream-duration"
               type="number"
               placeholder="30"
               className="w-full rounded-xl border border-slate-800 bg-slate-900/50 p-4 outline-none focus:border-accent transition-colors"

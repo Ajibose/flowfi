@@ -97,7 +97,7 @@ describe('POST /v1/streams/:streamId/top-up', () => {
     expect(res.status).toBe(200);
     expect(res.body.txHash).toBe('abc123txhash');
     expect(res.body.streamId).toBe(42);
-    expect(topUpStream).toHaveBeenCalledWith(42, 1000n, SENDER);
+    expect(topUpStream).toHaveBeenCalledWith(42n, 1000n, SENDER);
   });
 
   it('returns 400 when amount is missing', async () => {
@@ -156,9 +156,33 @@ describe('POST /v1/streams/:streamId/top-up', () => {
 
     expect(mockPrisma.stream.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { streamId: 42 },
+        where: { streamId: 42n },
         data: expect.objectContaining({ depositedAmount: '87400' }),
       }),
     );
+  });
+
+  it('returns 409 when stream is inactive', async () => {
+    vi.mocked(mockPrisma.stream.findUnique).mockResolvedValue({ ...mockStream, isActive: false } as any);
+
+    const res = await request(app)
+      .post('/v1/streams/42/top-up')
+      .set('Authorization', 'Bearer dummy')
+      .send({ amount: '1000' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/inactive stream/);
+  });
+
+  it('returns 409 when stream is paused', async () => {
+    vi.mocked(mockPrisma.stream.findUnique).mockResolvedValue({ ...mockStream, isPaused: true } as any);
+
+    const res = await request(app)
+      .post('/v1/streams/42/top-up')
+      .set('Authorization', 'Bearer dummy')
+      .send({ amount: '1000' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/paused stream/);
   });
 });

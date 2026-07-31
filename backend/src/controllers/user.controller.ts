@@ -6,6 +6,54 @@ import type { AuthenticatedRequest } from '../types/auth.types.js';
 import { DEFAULT_EVENTS_PAGE_SIZE, MAX_EVENTS_PAGE_SIZE } from '../routes/v1/events.routes.js';
 
 /**
+ * Public shape of a Stream, used when embedding streams inside a public
+ * user response. Excludes nothing sensitive today, but is kept explicit
+ * so newly added internal-only fields on the Stream model are not
+ * leaked automatically.
+ */
+const publicStreamSelect = {
+    id: true,
+    streamId: true,
+    sender: true,
+    recipient: true,
+    tokenAddress: true,
+    ratePerSecond: true,
+    depositedAmount: true,
+    withdrawnAmount: true,
+    startTime: true,
+    lastUpdateTime: true,
+    endTime: true,
+    isActive: true,
+    isPaused: true,
+    pausedAt: true,
+    totalPausedDuration: true,
+    createdAt: true,
+    updatedAt: true,
+} as const;
+
+/**
+ * Public shape of a User. Limits the response to fields that are safe to
+ * expose to any caller, so internal-only fields added to the User model
+ * later are excluded by default rather than leaked automatically.
+ */
+const publicUserSelect = {
+    id: true,
+    publicKey: true,
+    createdAt: true,
+    updatedAt: true,
+    sentStreams: {
+        take: 10,
+        orderBy: { createdAt: 'desc' as const },
+        select: publicStreamSelect,
+    },
+    receivedStreams: {
+        take: 10,
+        orderBy: { createdAt: 'desc' as const },
+        select: publicStreamSelect,
+    },
+};
+
+/**
  * Register a new wallet public key
  */
 export const registerUser = async (req: Request, res: Response, next: NextFunction) => {
@@ -39,20 +87,17 @@ export const registerUser = async (req: Request, res: Response, next: NextFuncti
  */
 export const getUser = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const publicKey = req.params.publicKey as string;
+        const { publicKey } = req.params;
+        if (typeof publicKey !== 'string') {
+            return res.status(400).json({ error: 'Invalid publicKey parameter' });
+        }
+        if (!/^G[A-Z2-7]{55}$/.test(publicKey)) {
+            return res.status(400).json({ error: 'Invalid Stellar public key format' });
+        }
 
         const user = await prisma.user.findUnique({
             where: { publicKey },
-            include: {
-                sentStreams: {
-                    take: 10,
-                    orderBy: { createdAt: 'desc' }
-                },
-                receivedStreams: {
-                    take: 10,
-                    orderBy: { createdAt: 'desc' }
-                }
-            }
+            select: publicUserSelect
         });
 
         if (!user) {
@@ -85,7 +130,7 @@ export const getUserEvents = async (req: Request, res: Response, next: NextFunct
             rawLimit && typeof rawLimit === 'string' ? (Number.parseInt(rawLimit, 10) || DEFAULT_EVENTS_PAGE_SIZE) : DEFAULT_EVENTS_PAGE_SIZE,
             MAX_EVENTS_PAGE_SIZE
         );
-        const offset = rawOffset && typeof rawOffset === 'string' ? (Number.parseInt(rawOffset, 10) || 0) : 0;
+        const offset = rawOffset && typeof rawOffset === 'string' ? Math.max(0, Number.parseInt(rawOffset, 10) || 0) : 0;
 
         const whereClause = {
             stream: {
