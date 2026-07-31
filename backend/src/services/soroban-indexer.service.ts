@@ -1,3 +1,25 @@
+/**
+ * LEGACY indexer — being phased out.
+ *
+ * The source of truth for event indexing is `SorobanEventWorker`
+ * (backend/src/workers/soroban-event-worker.ts). That worker handles the full
+ * event surface (created / topped_up / withdrawn / paused / resumed /
+ * cancelled / completed / fee_collected / fee_config_updated /
+ * admin_transferred), uses cursor-based pagination, persists the `IndexerState`
+ * cursor, and broadcasts SSE updates.
+ *
+ * This service is a simpler, second indexer that polls the Soroban RPC on its
+ * own interval and writes to the same rows as the worker, which means both run
+ * concurrently and can race on the same Stream / StreamEvent rows (see issue
+ * #801). It is kept only for backwards compatibility and is being phased out.
+ * Until the functional consolidation (issue #801) lands, do not extend this
+ * service with new behavior — mirror any changes in `SorobanEventWorker`
+ * instead. Once consolidation lands, this file is expected to be removed.
+ *
+ * NAMING CONVENTION PLAN: this file already follows the kebab-case `.service.ts`
+ * convention. The helper file backend/src/services/indexerService.ts (which is
+ * NOT an indexer) is expected to be renamed to `indexer.service.ts` to match.
+ */
 import { prisma } from '../lib/prisma.js';
 import logger from '../logger.js';
 import { withRpcRetry, withRpcTimeout } from './sorobanService.js';
