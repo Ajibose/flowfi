@@ -254,8 +254,8 @@ describe("Stream Controller", () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(prisma.streamEvent.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { streamId: 123 },
-          orderBy: { timestamp: 'desc' },
+          where: { streamId: 123n },
+          orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
           take: 10,
           skip: 0,
         }),
