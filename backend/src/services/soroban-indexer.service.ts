@@ -122,12 +122,18 @@ export class SorobanIndexerService {
     return null;
   }
 
-  private parseStreamId(record: JsonRecord): number | null {
+  private parseStreamId(record: JsonRecord): bigint | null {
     const raw = record.stream_id ?? record.streamId;
-    if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
-    if (typeof raw === 'string' && raw.trim()) {
-      const parsed = Number(raw);
-      if (Number.isInteger(parsed)) return parsed;
+    if (typeof raw === 'bigint' && raw >= 0n) return raw;
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && Number.isSafeInteger(raw)) {
+      return BigInt(raw);
+    }
+    if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+      try {
+        return BigInt(raw.trim());
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -178,9 +184,8 @@ export class SorobanIndexerService {
       const tokenAddress = this.readString(value, 'token_address', 'tokenAddress');
       const ratePerSecond = this.readString(value, 'rate_per_second', 'ratePerSecond');
       const depositedAmount = this.readString(value, 'deposited_amount', 'depositedAmount');
-      const startTimeRaw = value.start_time ?? value.startTime ?? timestamp;
-      const startTime = BigInt(startTimeRaw ?? timestamp);
-      const timestampBigInt = BigInt(timestamp);
+      const startTimeStr = this.readString(value, 'start_time', 'startTime') ?? String(timestamp);
+      const startTime = BigInt(startTimeStr);
 
       if (!sender || !recipient || !tokenAddress || !ratePerSecond || !depositedAmount) return;
 
