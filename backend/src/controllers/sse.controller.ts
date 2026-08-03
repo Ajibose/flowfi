@@ -31,7 +31,8 @@ export const subscribe = async (req: Request, res: Response) => {
 
   try {
     const sourceIp = getClientIp(req);
-    const capacity = sseService.checkCapacity(sourceIp);
+    const authUserId = (req as AuthenticatedRequest).user?.publicKey;
+    const capacity = sseService.checkCapacity(sourceIp, authUserId);
     if (!capacity.allowed) {
       if (capacity.retryAfterSeconds) {
         res.setHeader('Retry-After', String(capacity.retryAfterSeconds));
@@ -87,7 +88,7 @@ export const subscribe = async (req: Request, res: Response) => {
     const requestId = requestContext.getStore()?.requestId;
     res.write(`data: ${JSON.stringify({ type: 'connected', clientId, requestId })}\n\n`);
 
-    sseService.addClient(clientId, res, subscriptions, sourceIp);
+    sseService.addClient(clientId, res, subscriptions, sourceIp, publicKey);
     return;
   } catch (error: unknown) {
     if (error instanceof z.ZodError) {
