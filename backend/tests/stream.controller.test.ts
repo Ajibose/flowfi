@@ -43,6 +43,13 @@ vi.mock("../src/logger.js", () => ({
   },
 }));
 
+type TestRequest = {
+  body: Record<string, unknown>;
+  query: Record<string, unknown>;
+  params: Record<string, unknown>;
+  user?: { publicKey?: string };
+};
+
 describe("Stream Controller", () => {
   let req: TestRequest;
   let res: Partial<Response>;

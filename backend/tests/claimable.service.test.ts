@@ -146,7 +146,7 @@ describe('ClaimableAmountService', () => {
     });
 
     const preWithdrawalState = makeStreamState({
-      streamId: 7,
+      streamId: 7n,
       ratePerSecond: '10',
       depositedAmount: '1000',
       withdrawnAmount: '0',
@@ -166,7 +166,7 @@ describe('ClaimableAmountService', () => {
     // and lastUpdateTime are advanced on the stream row, exactly as
     // handleTokensWithdrawn does in soroban-event-worker.ts.
     const postWithdrawalState = makeStreamState({
-      streamId: 7,
+      streamId: 7n,
       ratePerSecond: '10',
       depositedAmount: '1000',
       withdrawnAmount: '400',
