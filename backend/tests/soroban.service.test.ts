@@ -165,7 +165,7 @@ describe('Soroban Service', () => {
         simulationSuccess(nativeToScVal(99n, { type: 'i128' }))
       );
       
-      await getStreamFromChain(1);
+      await getStreamFromChain(1n);
       
       expect(mocks.server.simulateTransaction).toHaveBeenCalled();
     });
@@ -191,7 +191,7 @@ describe('Soroban Service', () => {
         )
       );
 
-      await expect(getStreamFromChain(7)).resolves.toEqual({
+      await expect(getStreamFromChain(7n)).resolves.toEqual({
         streamId: 7,
         sender,
         recipient,
@@ -211,7 +211,7 @@ describe('Soroban Service', () => {
         simulationSuccess(mapVal([['sender', nativeToScVal('not-an-address')]]))
       );
 
-      await expect(getStreamFromChain(8)).resolves.toBeNull();
+      await expect(getStreamFromChain(8n)).resolves.toBeNull();
     });
 
     it.skip('decodes getClaimableFromChain response', async () => {
@@ -221,7 +221,7 @@ describe('Soroban Service', () => {
         simulationSuccess(nativeToScVal(99n, { type: 'i128' }))
       );
 
-      await expect(getClaimableFromChain(9)).resolves.toBe('99');
+      await expect(getClaimableFromChain(9n)).resolves.toBe('99');
     });
 
     it('returns null when getClaimableFromChain decoding fails', async () => {
@@ -229,7 +229,7 @@ describe('Soroban Service', () => {
 
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(true)));
 
-      await expect(getClaimableFromChain(10)).resolves.toBeNull();
+      await expect(getClaimableFromChain(10n)).resolves.toBeNull();
     });
   });
 
@@ -255,10 +255,80 @@ describe('Soroban Service', () => {
     it('throws when KEEPER_SECRET_KEY is unset', async () => {
       const { topUpStream } = await importService({ KEEPER_SECRET_KEY: undefined });
 
-      await expect(topUpStream(1, 100n, Keypair.random().publicKey())).rejects.toThrow(
+      await expect(topUpStream(1n, 100n, Keypair.random().publicKey())).rejects.toThrow(
         'KEEPER_SECRET_KEY not configured'
       );
       expect(mocks.server.sendTransaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('withRpcTimeout', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('rejects with RpcTimeoutError and aborts the signal when the call hangs past the deadline', async () => {
+      const { withRpcTimeout, RpcTimeoutError } = await importService();
+      let observedSignal: AbortSignal | undefined;
+
+      const promise = withRpcTimeout(
+        'slowCall',
+        (signal) => {
+          observedSignal = signal;
+          return new Promise(() => {});
+        },
+        1000
+      );
+      const assertion = expect(promise).rejects.toBeInstanceOf(RpcTimeoutError);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(observedSignal?.aborted).toBe(true);
+    });
+
+    it('resolves normally when the call finishes before the deadline', async () => {
+      const { withRpcTimeout } = await importService();
+
+      await expect(withRpcTimeout('fastCall', async () => 'ok', 1000)).resolves.toBe('ok');
+    });
+  });
+
+  describe('withRpcRetry', () => {
+    it('retries a transient failure with backoff and returns the eventual success', async () => {
+      const { withRpcRetry } = await importService();
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls += 1;
+        if (calls < 3) throw new Error('ECONNRESET');
+        return 'ok';
+      });
+
+      await expect(withRpcRetry('flaky', fn, 3)).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a non-transient error', async () => {
+      const { withRpcRetry } = await importService();
+      const fn = vi.fn(async () => {
+        throw new Error('Invalid amount: must be a valid integer');
+      });
+
+      await expect(withRpcRetry('validation', fn, 3)).rejects.toThrow('Invalid amount');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up after exceeding the max retry count for a persistently transient error', async () => {
+      const { withRpcRetry } = await importService();
+      const fn = vi.fn(async () => {
+        throw new Error('ECONNRESET');
+      });
+
+      await expect(withRpcRetry('flaky', fn, 2)).rejects.toThrow('ECONNRESET');
+      expect(fn).toHaveBeenCalledTimes(3);
     });
   });
 });
