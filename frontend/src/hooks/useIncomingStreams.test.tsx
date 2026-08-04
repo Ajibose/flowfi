@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import React from "react";
@@ -8,8 +7,9 @@ import {
   useWithdrawIncomingStream,
   incomingStreamsQueryKey,
 } from "./useIncomingStreams";
-import { fetchIncomingStreams } from "@/lib/api/streams";
+import { fetchIncomingStreams, type IncomingStreamRecord } from "@/lib/api/streams";
 import { withdrawFromStream } from "@/lib/soroban";
+import type { WalletSession } from "@/lib/wallet";
 
 vi.mock("@/lib/api/streams", () => ({
   fetchIncomingStreams: vi.fn(),
@@ -32,8 +32,8 @@ describe("useIncomingStreams hooks", () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     queryClient.clear();
+    vi.useRealTimers();
   });
 
   const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -66,6 +66,37 @@ describe("useIncomingStreams hooks", () => {
       expect(result.current.fetchStatus).toBe("idle");
       expect(fetchIncomingStreams).not.toHaveBeenCalled();
     });
+
+    it("does not poll by default", async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchIncomingStreams).mockResolvedValue([]);
+
+      renderHook(() => useIncomingStreams("pubkey"), { wrapper });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+
+      expect(fetchIncomingStreams).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it("polls at the provided refetchInterval when overridden", async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchIncomingStreams).mockResolvedValue([]);
+
+      renderHook(
+        () => useIncomingStreams("pubkey", { refetchInterval: 5000 }),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(vi.mocked(fetchIncomingStreams).mock.calls.length).toBeGreaterThan(1);
+      vi.useRealTimers();
+    });
   });
 
   describe("useWithdrawIncomingStream", () => {
@@ -76,36 +107,37 @@ describe("useIncomingStreams hooks", () => {
       );
 
       await expect(
-        result.current.mutateAsync({} as any)
+        result.current.mutateAsync({} as unknown as IncomingStreamRecord)
       ).rejects.toThrow("Please connect your wallet first");
       expect(withdrawFromStream).not.toHaveBeenCalled();
     });
 
     it("invalidates incomingStreamsQueryKey(publicKey) on success", async () => {
-      (withdrawFromStream as any).mockResolvedValue({ status: "success" });
-      (fetchIncomingStreams as any).mockResolvedValue([]);
-      
+      vi.useFakeTimers();
+      vi.mocked(withdrawFromStream).mockResolvedValue({ success: true, txHash: "tx-hash" });
+      vi.mocked(fetchIncomingStreams).mockResolvedValue([]);
       const { result } = renderHook(
-        () => useWithdrawIncomingStream({} as any, "pubkey"),
+        () => useWithdrawIncomingStream({} as unknown as WalletSession, "pubkey"),
         { wrapper }
       );
 
       const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-      vi.useFakeTimers();
 
       await act(async () => {
         await result.current.mutateAsync({
-          id: 1,
+          id: "1",
           streamId: 1,
           withdrawn: 0,
           deposited: 100,
           ratePerSecond: 1,
           isPaused: false,
           lastUpdateTime: Date.now() / 1000,
-        } as any);
+        } as unknown as IncomingStreamRecord);
       });
 
-      // Advance the retry delays so the fallback invalidation runs immediately.
+      // pollIndexerForWithdraw retries with exponential backoff
+      // (1+2+4+8+16+32s) before falling back to invalidateQueries, so
+      // fast-forward the fake clock past all retries.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(63_000);
       });
