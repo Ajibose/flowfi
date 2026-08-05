@@ -1,3 +1,25 @@
+/**
+ * LEGACY indexer — being phased out.
+ *
+ * The source of truth for event indexing is `SorobanEventWorker`
+ * (backend/src/workers/soroban-event-worker.ts). That worker handles the full
+ * event surface (created / topped_up / withdrawn / paused / resumed /
+ * cancelled / completed / fee_collected / fee_config_updated /
+ * admin_transferred), uses cursor-based pagination, persists the `IndexerState`
+ * cursor, and broadcasts SSE updates.
+ *
+ * This service is a simpler, second indexer that polls the Soroban RPC on its
+ * own interval and writes to the same rows as the worker, which means both run
+ * concurrently and can race on the same Stream / StreamEvent rows (see issue
+ * #801). It is kept only for backwards compatibility and is being phased out.
+ * Until the functional consolidation (issue #801) lands, do not extend this
+ * service with new behavior — mirror any changes in `SorobanEventWorker`
+ * instead. Once consolidation lands, this file is expected to be removed.
+ *
+ * NAMING CONVENTION PLAN: this file already follows the kebab-case `.service.ts`
+ * convention. The helper file backend/src/services/indexerService.ts (which is
+ * NOT an indexer) is expected to be renamed to `indexer.service.ts` to match.
+ */
 import { prisma } from '../lib/prisma.js';
 import logger from '../logger.js';
 import { withRpcRetry, withRpcTimeout } from './sorobanService.js';
@@ -122,12 +144,18 @@ export class SorobanIndexerService {
     return null;
   }
 
-  private parseStreamId(record: JsonRecord): number | null {
+  private parseStreamId(record: JsonRecord): bigint | null {
     const raw = record.stream_id ?? record.streamId;
-    if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
-    if (typeof raw === 'string' && raw.trim()) {
-      const parsed = Number(raw);
-      if (Number.isInteger(parsed)) return parsed;
+    if (typeof raw === 'bigint' && raw >= 0n) return raw;
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && Number.isSafeInteger(raw)) {
+      return BigInt(raw);
+    }
+    if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+      try {
+        return BigInt(raw.trim());
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -178,9 +206,8 @@ export class SorobanIndexerService {
       const tokenAddress = this.readString(value, 'token_address', 'tokenAddress');
       const ratePerSecond = this.readString(value, 'rate_per_second', 'ratePerSecond');
       const depositedAmount = this.readString(value, 'deposited_amount', 'depositedAmount');
-      const startTimeRaw = value.start_time ?? value.startTime ?? timestamp;
-      const startTime = BigInt(startTimeRaw ?? timestamp);
-      const timestampBigInt = BigInt(timestamp);
+      const startTimeStr = this.readString(value, 'start_time', 'startTime') ?? String(timestamp);
+      const startTime = BigInt(startTimeStr);
 
       if (!sender || !recipient || !tokenAddress || !ratePerSecond || !depositedAmount) return;
 
