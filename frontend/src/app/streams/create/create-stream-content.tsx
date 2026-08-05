@@ -28,6 +28,29 @@ interface StreamDraft {
   savedAt: number;
 }
 
+interface FormFields {
+  recipient: string;
+  token: string;
+  amount: string;
+  duration: string;
+}
+
+const DEFAULT_FORM: FormFields = {
+  recipient: "",
+  token: "XLM",
+  amount: "",
+  duration: "30",
+};
+
+function isPristineForm(form: FormFields): boolean {
+  return (
+    form.recipient === "" &&
+    form.token === DEFAULT_FORM.token &&
+    form.amount === "" &&
+    form.duration === DEFAULT_FORM.duration
+  );
+}
+
 function saveDraftToSession(data: StreamDraft): void {
   try {
     if (typeof window === "undefined") return;
@@ -43,7 +66,14 @@ function loadDraftFromSession(): StreamDraft | null {
     const raw = sessionStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StreamDraft;
-    if (parsed && typeof parsed.recipient === "string") {
+    // Reject empty drafts so a bogus "resumed draft" banner is never shown
+    // over a blank form.
+    if (
+      parsed &&
+      typeof parsed.recipient === "string" &&
+      typeof parsed.amount === "string" &&
+      (parsed.recipient.trim() !== "" || parsed.amount.trim() !== "")
+    ) {
       return parsed;
     }
     return null;
@@ -68,44 +98,31 @@ export default function CreateStreamContent() {
   const [nowTimestamp] = useState(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [txState, setTxState] = useState<"idle" | "signing" | "submitted" | "confirming">("idle");
-  const [draftRestored, setDraftRestored] = useState(false);
+  // Read the draft once at mount so the banner has a stable savedAt value
+  // instead of re-reading sessionStorage on every render.
+  const [restoredDraft, setRestoredDraft] = useState<StreamDraft | null>(
+    () => loadDraftFromSession()
+  );
   const [dismissedDraftBanner, setDismissedDraftBanner] = useState(false);
+  const draftRestored = restoredDraft !== null;
 
-  const [formData, setFormData] = useState<{
-    recipient: string;
-    token: string;
-    amount: string;
-    duration: string;
-  }>(() => {
-    // Restore draft from sessionStorage on initial mount
-    const draft = loadDraftFromSession();
-    if (draft) {
+  const [formData, setFormData] = useState<FormFields>(() => {
+    if (restoredDraft) {
       return {
-        recipient: draft.recipient,
-        token: draft.token,
-        amount: draft.amount,
-        duration: draft.duration,
+        recipient: restoredDraft.recipient,
+        token: restoredDraft.token,
+        amount: restoredDraft.amount,
+        duration: restoredDraft.duration,
       };
     }
-    return {
-      recipient: "",
-      token: "XLM",
-      amount: "",
-      duration: "30",
-    };
+    return { ...DEFAULT_FORM };
   });
 
-  // Set flag if a draft was restored
-  useEffect(() => {
-    const draft = loadDraftFromSession();
-    if (draft) {
-      setDraftRestored(true);
-    }
-  }, []);
-
-  // Persist form data to sessionStorage whenever it changes
+  // Persist form data to sessionStorage whenever it changes — but never
+  // write an empty draft for a pristine form on first mount.
   useEffect(() => {
     const timer = setTimeout(() => {
+      if (isPristineForm(formData)) return;
       saveDraftToSession({
         recipient: formData.recipient,
         token: formData.token,
@@ -192,40 +209,28 @@ export default function CreateStreamContent() {
 
   const handleDismissDraft = useCallback(() => {
     clearDraft();
-    setDraftRestored(false);
+    setRestoredDraft(null);
     setDismissedDraftBanner(true);
-    setFormData({
-      recipient: "",
-      token: "XLM",
-      amount: "",
-      duration: "30",
-    });
+    setFormData({ ...DEFAULT_FORM });
   }, []);
-
-  const handleBack = useCallback(() => {
-    // Navigate back without clearing the draft so it persists across navigation
-    router.push("/dashboard");
-  }, [router]);
 
   return (
     <div className="container mx-auto max-w-2xl px-4 py-12">
-      <button
-        onClick={handleBack}
+      <Link
+        href="/dashboard"
         className="mb-8 inline-flex items-center text-sm font-medium text-slate-400 hover:text-white transition-colors"
       >
         <ArrowLeft className="mr-2 h-4 w-4" />
         Back to Dashboard
-      </button>
+      </Link>
 
       {/* Resume draft banner */}
-      {draftRestored && !dismissedDraftBanner && (
+      {restoredDraft && !dismissedDraftBanner && (
         <div className="mb-6 flex items-center gap-3 rounded-2xl border border-accent/30 bg-accent/10 px-5 py-4 text-sm">
           <FileText className="h-5 w-5 text-accent flex-shrink-0" />
           <span className="flex-1">
             Resumed a saved draft from{" "}
-            {new Date(
-              loadDraftFromSession()?.savedAt ?? Date.now()
-            ).toLocaleTimeString()}
+            {new Date(restoredDraft.savedAt).toLocaleTimeString()}
             . You can continue editing or start fresh.
           </span>
           <button

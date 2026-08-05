@@ -120,6 +120,39 @@ describe("CreateStreamContent sessionStorage draft persistence", () => {
     expect(typeof savedData.savedAt).toBe("number");
   });
 
+  it("does not write an empty draft for a pristine form", async () => {
+    sessionStorageMock.getItem.mockReturnValue(null);
+
+    render(<CreateStreamContent />);
+
+    // Wait well past the debounce window
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(sessionStorageMock.setItem).not.toHaveBeenCalled();
+  });
+
+  it("ignores an empty draft on load", () => {
+    sessionStorageMock.getItem.mockReturnValue(
+      JSON.stringify({
+        recipient: "",
+        token: "XLM",
+        amount: "",
+        duration: "30",
+        savedAt: Date.now() - 60000,
+      })
+    );
+
+    render(<CreateStreamContent />);
+
+    // No bogus "resumed draft" banner over a blank form
+    expect(
+      screen.queryByText(/resumed a saved draft/i)
+    ).not.toBeInTheDocument();
+    expect(getRecipientInput().value).toBe("");
+    expect(getAmountInput().value).toBe("");
+    expect(getDurationInput().value).toBe("30");
+  });
+
   it("restores draft from sessionStorage on mount", async () => {
     const draft = {
       recipient: "GAV4A377RAEV6YVAWZVHXF4VZD5ZBXGIKEMNHV5YIMV5LIKSNQVYUBR7",
