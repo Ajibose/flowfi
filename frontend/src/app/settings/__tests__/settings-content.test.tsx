@@ -11,17 +11,39 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push }),
 }));
 
+vi.mock("next/link", () => ({
+  __esModule: true,
+  default: ({
+    href,
+    children,
+    ...props
+  }: {
+    href: string;
+    children: React.ReactNode;
+  }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn(), loading: vi.fn() },
 }));
 
+let mockSession: {
+  publicKey: string;
+  network: string;
+  walletName: string;
+} | null = {
+  publicKey: "GAV4A377RAEV6YVAWZVHXF4VZD5ZBXGIKEMNHV5YIMV5LIKSNQVYUBR7",
+  network: "TESTNET",
+  walletName: "Freighter",
+};
+
 vi.mock("@/context/wallet-context", () => ({
   useWallet: () => ({
-    session: {
-      publicKey: "GAV4A377RAEV6YVAWZVHXF4VZD5ZBXGIKEMNHV5YIMV5LIKSNQVYUBR7",
-      network: "TESTNET",
-      walletName: "Freighter",
-    },
+    session: mockSession,
     disconnect,
     isHydrated: true,
   }),
@@ -42,7 +64,10 @@ import SettingsContent from "../settings-content";
 function getThemeButtons(): HTMLElement[] {
   const buttons = screen.getAllByRole("button");
   return buttons.filter(
-    (b) => b.textContent === "Light" || b.textContent === "Dark" || b.textContent === "System"
+    (b) =>
+      b.textContent === "Light" ||
+      b.textContent === "Dark" ||
+      b.textContent === "System"
   );
 }
 
@@ -50,10 +75,27 @@ function getCurrencySelect(): HTMLSelectElement | null {
   return screen.queryByLabelText(/default token/i) as HTMLSelectElement | null;
 }
 
-describe("SettingsContent dirty-state detection", () => {
+function getSaveButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: /save changes/i });
+}
+
+function getConnectWalletLink(): HTMLElement {
+  return screen.getByText(/connect wallet/i);
+}
+
+function getDisconnectButton(): HTMLElement {
+  return screen.getByText(/disconnect wallet/i);
+}
+
+describe("SettingsContent draft-and-save dirty-state handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Set default localStorage values
+    mockSession = {
+      publicKey: "GAV4A377RAEV6YVAWZVHXF4VZD5ZBXGIKEMNHV5YIMV5LIKSNQVYUBR7",
+      network: "TESTNET",
+      walletName: "Freighter",
+    };
+    // Set default saved settings
     localStorage.clear();
     localStorage.setItem("flowfi-theme", "dark");
     localStorage.setItem("flowfi-currency", "USD");
@@ -69,124 +111,151 @@ describe("SettingsContent dirty-state detection", () => {
   it("starts clean (not dirty) on initial render", () => {
     render(<SettingsContent />);
 
-    // Navigate away without changes — should proceed without confirmation
+    expect(getSaveButton()).toBeDisabled();
+
+    // Disconnect without changes — no confirmation needed
     act(() => {
-      fireEvent.click(screen.getByText(/connect wallet/i));
+      fireEvent.click(getDisconnectButton());
     });
 
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalled();
     expect(push).toHaveBeenCalledWith("/");
   });
 
   it("detects dirty state when theme is changed", () => {
     render(<SettingsContent />);
 
-    const themeButtons = getThemeButtons();
-    const lightButton = themeButtons.find((b) => b.textContent === "Light");
+    const lightButton = getThemeButtons().find((b) => b.textContent === "Light");
     expect(lightButton).toBeDefined();
 
-    // Change theme to Light (different from initial "dark")
     act(() => {
       fireEvent.click(lightButton!);
     });
 
-    // Try to navigate away — confirm should fire (mock returns false = declined)
+    expect(getSaveButton()).toBeEnabled();
+
+    // Navigate away while dirty — confirm should fire (mock returns false = declined)
     act(() => {
-      fireEvent.click(screen.getByText(/connect wallet/i));
+      fireEvent.click(getDisconnectButton());
     });
 
     expect(window.confirm).toHaveBeenCalled();
-    expect(push).not.toHaveBeenCalled(); // Declined navigation
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it("accepts navigation when the user confirms leaving with unsaved changes", () => {
+    vi.mocked(window.confirm).mockReturnValue(true);
+
+    render(<SettingsContent />);
+
+    const lightButton = getThemeButtons().find((b) => b.textContent === "Light");
+    act(() => {
+      fireEvent.click(lightButton!);
+    });
+
+    act(() => {
+      fireEvent.click(getDisconnectButton());
+    });
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(disconnect).toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith("/");
   });
 
   it("detects dirty state when display currency is changed", () => {
-    // Accept the confirm dialog
-    vi.mocked(window.confirm).mockReturnValue(true);
-
     render(<SettingsContent />);
 
     const select = getCurrencySelect();
     expect(select).not.toBeNull();
 
-    // Change currency value
     act(() => {
       fireEvent.change(select!, { target: { value: "XLM" } });
     });
 
-    // Try to navigate away — confirm should fire
+    expect(getSaveButton()).toBeEnabled();
+
     act(() => {
-      fireEvent.click(screen.getByText(/connect wallet/i));
+      fireEvent.click(getDisconnectButton());
     });
 
     expect(window.confirm).toHaveBeenCalled();
-    expect(push).toHaveBeenCalled(); // Accepted navigation
   });
 
   it("detects dirty state when amount format is changed", () => {
     render(<SettingsContent />);
 
-    // Find the amount format buttons
-    const allButtons = screen.getAllByRole("button");
-    const compactButton = allButtons.find((b) => b.textContent?.includes("Compact"));
+    const compactButton = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.includes("Compact"));
     expect(compactButton).toBeDefined();
 
     act(() => {
       fireEvent.click(compactButton!);
     });
 
-    // Navigate with the disconnect button
-    const disconnectBtn = screen.getByText(/disconnect wallet/i);
-    act(() => {
-      fireEvent.click(disconnectBtn);
-    });
-
-    expect(window.confirm).toHaveBeenCalled();
+    expect(getSaveButton()).toBeEnabled();
   });
 
   it("detects dirty state when decimal places is changed", () => {
     render(<SettingsContent />);
 
-    // Find the decimal places buttons
-    const allButtons = screen.getAllByRole("button");
-    const fourDecimalsBtn = allButtons.find((b) => b.textContent?.includes("4 decimals"));
+    const fourDecimalsBtn = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.includes("4 decimals"));
     expect(fourDecimalsBtn).toBeDefined();
 
     act(() => {
       fireEvent.click(fourDecimalsBtn!);
     });
 
-    // Navigate with the disconnect button
-    const disconnectBtn = screen.getByText(/disconnect wallet/i);
-    act(() => {
-      fireEvent.click(disconnectBtn);
-    });
-
-    expect(window.confirm).toHaveBeenCalled();
+    expect(getSaveButton()).toBeEnabled();
   });
 
-  it("does not show confirm when no changes were made", () => {
+  it("saving changes persists the draft and clears the dirty state", () => {
     render(<SettingsContent />);
 
-    // Navigate away with disconnect — no changes made
-    const disconnectBtn = screen.getByText(/disconnect wallet/i);
+    const lightButton = getThemeButtons().find((b) => b.textContent === "Light");
     act(() => {
-      fireEvent.click(disconnectBtn);
+      fireEvent.click(lightButton!);
     });
 
-    // Should NOT show confirm
+    act(() => {
+      fireEvent.click(getSaveButton());
+    });
+
+    expect(localStorage.getItem("flowfi-theme")).toBe("light");
+    expect(getSaveButton()).toBeDisabled();
+
+    // No longer dirty — disconnect proceeds without confirmation
+    act(() => {
+      fireEvent.click(getDisconnectButton());
+    });
+
     expect(window.confirm).not.toHaveBeenCalled();
     expect(disconnect).toHaveBeenCalled();
   });
 
-  it("restores dirty state to clean after disconnect", () => {
+  it("guards internal link navigation when dirty (not connected)", () => {
+    mockSession = null;
     render(<SettingsContent />);
 
-    // No changes were made, so disconnect should work without confirm
-    const disconnectBtn = screen.getByText(/disconnect wallet/i);
+    // Pristine — internal link navigation is not blocked
     act(() => {
-      fireEvent.click(disconnectBtn);
+      fireEvent.click(getConnectWalletLink());
+    });
+    expect(window.confirm).not.toHaveBeenCalled();
+
+    // Make a change, then try to leave via the internal link
+    const lightButton = getThemeButtons().find((b) => b.textContent === "Light");
+    act(() => {
+      fireEvent.click(lightButton!);
     });
 
-    expect(window.confirm).not.toHaveBeenCalled();
-    expect(disconnect).toHaveBeenCalledTimes(1);
+    act(() => {
+      fireEvent.click(getConnectWalletLink());
+    });
+
+    expect(window.confirm).toHaveBeenCalled();
   });
 });
