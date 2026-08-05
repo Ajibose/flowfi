@@ -6,24 +6,35 @@ const DEFAULT_MESSAGE = "You have unsaved changes. Are you sure you want to leav
 
 function isInternalLink(anchor: HTMLAnchorElement): boolean {
   const href = anchor.getAttribute("href");
+  if (!href) return false;
+
+  const trimmed = href.trim();
+  // In-page anchors and non-navigation schemes are never internal navigations.
   if (
-    !href ||
-    href.startsWith("#") ||
-    href.startsWith("mailto:") ||
-    href.startsWith("tel:") ||
-    href.startsWith("javascript:")
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("mailto:") ||
+    trimmed.startsWith("tel:")
   ) {
     return false;
   }
   if (anchor.target === "_blank" || anchor.hasAttribute("download")) {
     return false;
   }
+
+  let url: URL;
   try {
-    const url = new URL(anchor.href, window.location.origin);
-    return url.origin === window.location.origin;
+    url = new URL(anchor.href, window.location.origin);
   } catch {
     return false;
   }
+
+  // Only http(s) navigation counts as an in-app link. This also rejects
+  // javascript:, data:, vbscript: and any other executable/foreign scheme.
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return false;
+  }
+
+  return url.origin === window.location.origin;
 }
 
 /**
