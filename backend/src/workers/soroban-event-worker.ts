@@ -313,6 +313,7 @@ export class SorobanEventWorker {
 
     let lastCursor: string | null = state.lastCursor;
     let lastLedger: number = state.lastLedger;
+    let hasError = false;
 
     // Sort events so that 'stream_created' events are processed first in the batch.
     // This ensures that subsequent events (like 'fee_collected') that depend on
@@ -333,10 +334,13 @@ export class SorobanEventWorker {
         await this.processEvent(event);
         this.eventsProcessed += 1;
         this.recordOutcome(true);
-        // Use the event ID as the cursor if pagingToken is not available
-        lastCursor = event.id;
-        lastLedger = event.ledger;
+        if (!hasError) {
+          // Use the event ID as the cursor if pagingToken is not available
+          lastCursor = event.id;
+          lastLedger = event.ledger;
+        }
       } catch (err) {
+        hasError = true;
         this.eventsFailed += 1;
         this.lastErrorAt = new Date();
         this.recordOutcome(false);
@@ -348,8 +352,10 @@ export class SorobanEventWorker {
       }
     }
 
-    // Use the response's final cursor if provided, otherwise the last event's ID
-    const finalCursor = (response as any).latestCursor || lastCursor;
+    // Use the response's final cursor if provided and no error occurred, otherwise the last valid event's ID
+    const finalCursor = hasError
+      ? lastCursor
+      : ((response as any).latestCursor || lastCursor);
 
     await prisma.indexerState.upsert({
       where: { id: INDEXER_STATE_ID },
