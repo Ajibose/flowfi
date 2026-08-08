@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import logger, { requestContext } from '../src/logger.js';
+import { requestContext } from '../src/logger.js';
 import { SorobanEventWorker } from '../src/workers/soroban-event-worker.js';
 import { replayFromLedger } from '../src/services/indexerService.js';
 
