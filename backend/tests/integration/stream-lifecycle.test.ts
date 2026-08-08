@@ -251,8 +251,9 @@ describe("Stream Lifecycle Integration Tests", () => {
     const { PrismaClient } = await import(
       "../../src/generated/prisma/index.js"
     );
+    const { createPgPool } = await import("../../src/lib/pg-pool.js");
     const connectionString = resolveTestDatabaseUrl();
-    testPool = new pg.Pool({ connectionString });
+    testPool = createPgPool({ connectionString });
     const testAdapter = new PrismaPg(testPool);
     testPrisma = new PrismaClient({
       adapter: testAdapter,
