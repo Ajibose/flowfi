@@ -15,12 +15,16 @@ vi.mock('../src/workers/soroban-event-worker.js', () => ({
   },
 }));
 
-vi.mock('../src/logger.js', () => ({
-  default: {
-    info: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock('../src/logger.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/logger.js')>();
+  return {
+    ...actual,
+    default: {
+      info: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+});
 
 import { prisma } from '../src/lib/prisma.js';
 import { sorobanEventWorker } from '../src/workers/soroban-event-worker.js';

@@ -68,7 +68,7 @@ jobs:
       # (where vitest actually resolves it from) rather than the root.
       - name: Install Vitest + Native Bindings
         run: |
-          npm install @vitest/coverage-v8@2.1.9 --no-save
+          npm install @vitest/coverage-v8@3.2.7 --no-save
           npm install @rollup/rollup-linux-x64-gnu --no-save
         working-directory: backend
 

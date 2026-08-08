@@ -1,8 +1,9 @@
+import { randomUUID } from "crypto";
 import { rpc, xdr, StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "../lib/prisma.js";
 import { INDEXER_STATE_ID, ensureIndexerState } from "../lib/indexer-state.js";
 import { sseService } from "../services/sse.service.js";
-import logger from "../logger.js";
+import logger, { requestContext } from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
 import "../lib/stream-id.js";
 
@@ -198,15 +199,30 @@ export class SorobanEventWorker {
    * Trigger an immediate poll cycle (used for replay and manual updates).
    * Serialized with the scheduled poll via `runExclusive` so two cursor writes
    * cannot overlap and regress `lastCursor` (#843).
+   *
+   * @param customRequestId Optional correlation ID to bind logs to a specific request/replay.
+   * @returns The correlation requestId associated with this poll batch.
    */
-  async triggerPoll(): Promise<void> {
-    if (!this.isRunning) return;
+  async triggerPoll(customRequestId?: string): Promise<string> {
+    if (!this.isRunning) {
+      return customRequestId || requestContext?.getStore?.()?.requestId || randomUUID();
+    }
+
+    const requestId =
+      customRequestId || requestContext?.getStore?.()?.requestId || randomUUID();
 
     try {
-      await this.runExclusive(() => this.fetchAndProcessEvents());
+      await this.runExclusive(() => {
+        const runBatch = () => this.fetchAndProcessEvents();
+        return requestContext && typeof requestContext.run === 'function'
+          ? requestContext.run({ requestId }, runBatch)
+          : runBatch();
+      });
     } catch (err) {
       logger.error("[SorobanWorker] Manual poll error:", err);
     }
+
+    return requestId;
   }
 
   // ─── Internal ──────────────────────────────────────────────────────────────
@@ -270,11 +286,16 @@ export class SorobanEventWorker {
 
   private async poll(): Promise<void> {
     try {
-      await this.runExclusive(() =>
-        this.fetchAndProcessEvents().catch((err) => {
-          logger.error("[SorobanWorker] Unhandled error during poll:", err);
-        }),
-      );
+      const requestId = randomUUID();
+      await this.runExclusive(() => {
+        const execute = () =>
+          this.fetchAndProcessEvents().catch((err) => {
+            logger.error("[SorobanWorker] Unhandled error during poll:", err);
+          });
+        return requestContext && typeof requestContext.run === 'function'
+          ? requestContext.run({ requestId }, execute)
+          : execute();
+      });
     } finally {
       this.scheduleNext();
     }
@@ -285,6 +306,14 @@ export class SorobanEventWorker {
    * cursor (or start ledger on first run) and process each one in order.
    */
   private async fetchAndProcessEvents(): Promise<void> {
+    const currentCtx = requestContext?.getStore?.();
+    if (!currentCtx?.requestId && requestContext && typeof requestContext.run === 'function') {
+      const requestId = randomUUID();
+      return requestContext.run({ requestId }, () =>
+        this.fetchAndProcessEvents(),
+      );
+    }
+
     // Ensure an IndexerState row exists on first run.
     const state = await ensureIndexerState(this.startLedger);
 
