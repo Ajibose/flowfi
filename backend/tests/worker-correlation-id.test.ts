@@ -35,9 +35,6 @@ describe('Worker and Replay Correlation ID', () => {
     const worker = new SorobanEventWorker();
     let capturedStoreRequestId: string | undefined;
 
-    // Spy on getEvents or fetchAndProcessEvents internal behavior
-    const spy = vi.spyOn(logger, 'info');
-
     // Trigger poll manually
     const reqId = await worker.triggerPoll('test-correlation-id-123');
 
