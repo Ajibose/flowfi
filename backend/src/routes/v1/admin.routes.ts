@@ -269,8 +269,8 @@ router.post('/indexer/replay', async (req: Request, res: Response) => {
     return;
   }
   try {
-    await replayFromLedger(fromLedger);
-    res.status(202).json({ ok: true, replayingFrom: fromLedger });
+    const requestId = await replayFromLedger(fromLedger);
+    res.status(202).json({ ok: true, replayingFrom: fromLedger, requestId });
   } catch (err) {
     res.status(500).json({ error: 'Replay failed' });
   }
