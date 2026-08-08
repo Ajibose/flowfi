@@ -83,11 +83,7 @@ vi.mock('../../src/middleware/auth.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/middleware/auth.js')>(
     '../../src/middleware/auth.js',
   );
-  return {
-    ...actual,
-    requireAdmin: (_req: unknown, _res: unknown, next: () => void) => next(),
-    requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
-  };
+  return actual;
 });
 
 vi.mock('../../src/services/indexerService.js', () => ({
@@ -108,12 +104,32 @@ vi.mock('../../src/workers/soroban-event-worker.js', () => ({
   SorobanEventWorker: vi.fn(),
 }));
 
-// ─── Import app after mocks are registered ────────────────────────────────────
+// ─── Import app and auth after mocks are registered ──────────────────────────
 
 import app from '../../src/app.js';
 import { sorobanEventWorker } from '../../src/workers/soroban-event-worker.js';
+import { signJwt } from '../../src/middleware/auth.js';
+import {
+  getIndexerStatus,
+  resetIndexer,
+  replayFromLedger,
+} from '../../src/services/indexerService.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const ADMIN_PUBLIC_KEY = 'GADMIN12345678901234567890123456789012345678901234567890';
+const NON_ADMIN_PUBLIC_KEY = 'GUSER12345678901234567890123456789012345678901234567890';
+
+function createToken(publicKey: string = ADMIN_PUBLIC_KEY): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({
+    sub: publicKey,
+    iat: now,
+    exp: now + 3600,
+    iss: 'flowfi-api',
+    aud: 'flowfi-api',
+  });
+}
 
 function setupCounts({
   total = 10,
@@ -136,6 +152,7 @@ function setupCounts({
 describe('GET /v1/admin/metrics', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
     mocks.cache.get.mockReturnValue(null);
     mocks.prisma.streamEvent.count.mockResolvedValue(0);
     mocks.prisma.streamEvent.findMany.mockResolvedValue([]);
@@ -151,7 +168,9 @@ describe('GET /v1/admin/metrics', () => {
       { withdrawnAmount: '0' },
     ]);
 
-    const res = await request(app).get('/v1/admin/metrics');
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
@@ -173,7 +192,9 @@ describe('GET /v1/admin/metrics', () => {
       { withdrawnAmount: '9007199254740993' },
     ]);
 
-    const res = await request(app).get('/v1/admin/metrics');
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
 
     expect(res.status).toBe(200);
     expect(res.body.total_volume_streamed).toBe('18014398509481986');
@@ -182,7 +203,9 @@ describe('GET /v1/admin/metrics', () => {
   it('caches the response for 60 seconds', async () => {
     setupCounts({ total: 4, active: 4 });
 
-    const first = await request(app).get('/v1/admin/metrics');
+    const first = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
     expect(first.status).toBe(200);
     expect(first.headers['x-cache']).toBe('MISS');
 
@@ -214,7 +237,9 @@ describe('GET /v1/admin/metrics', () => {
     };
     mocks.cache.get.mockReturnValueOnce(cachedPayload);
 
-    const res = await request(app).get('/v1/admin/metrics');
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
 
     expect(res.status).toBe(200);
     expect(res.headers['x-cache']).toBe('HIT');
@@ -232,7 +257,9 @@ describe('GET /v1/admin/metrics', () => {
       degraded: true,
     });
 
-    const res = await request(app).get('/v1/admin/metrics');
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
 
     expect(res.status).toBe(200);
     expect(res.body.indexer).toMatchObject({
@@ -263,7 +290,9 @@ describe('GET /v1/admin/metrics', () => {
       degraded: true,
     });
 
-    const res = await request(app).get('/v1/admin/metrics');
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
 
     expect(res.status).toBe(200);
     expect(res.headers['x-cache']).toBe('HIT');
@@ -276,3 +305,192 @@ describe('GET /v1/admin/metrics', () => {
     });
   });
 });
+
+describe('GET /v1/admin/indexer/status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
+  });
+
+  it('enforces requireAdmin (401 without token, 403 with non-admin token)', async () => {
+    const noTokenRes = await request(app).get('/v1/admin/indexer/status');
+    expect(noTokenRes.status).toBe(401);
+
+    const nonAdminRes = await request(app)
+      .get('/v1/admin/indexer/status')
+      .set('Authorization', `Bearer ${createToken(NON_ADMIN_PUBLIC_KEY)}`);
+    expect(nonAdminRes.status).toBe(403);
+    expect(nonAdminRes.body.error).toBe('Forbidden');
+  });
+
+  it('returns status 200 with indexer status data for admin', async () => {
+    const mockStatus = {
+      lastLedger: 12345,
+      lastCursor: 'cursor_abc',
+      updatedAt: '2026-08-08T00:00:00.000Z',
+      lagSeconds: 12,
+    };
+    vi.mocked(getIndexerStatus).mockResolvedValueOnce(mockStatus as any);
+
+    const res = await request(app)
+      .get('/v1/admin/indexer/status')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(mockStatus);
+    expect(getIndexerStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns status 500 if getIndexerStatus throws', async () => {
+    vi.mocked(getIndexerStatus).mockRejectedValueOnce(new Error('DB failure'));
+
+    const res = await request(app)
+      .get('/v1/admin/indexer/status')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to fetch indexer status' });
+  });
+});
+
+describe('POST /v1/admin/indexer/reset', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
+    vi.mocked(resetIndexer).mockResolvedValue(undefined);
+  });
+
+  it('enforces requireAdmin (401 without token, 403 with non-admin token)', async () => {
+    const noTokenRes = await request(app)
+      .post('/v1/admin/indexer/reset')
+      .send({ ledger: 100 });
+    expect(noTokenRes.status).toBe(401);
+
+    const nonAdminRes = await request(app)
+      .post('/v1/admin/indexer/reset')
+      .set('Authorization', `Bearer ${createToken(NON_ADMIN_PUBLIC_KEY)}`)
+      .send({ ledger: 100 });
+    expect(nonAdminRes.status).toBe(403);
+  });
+
+  it('returns 400 when ledger is missing, negative, or non-integer', async () => {
+    const cases = [
+      {},
+      { ledger: -1 },
+      { ledger: -100 },
+      { ledger: 12.34 },
+      { ledger: 'not-a-number' },
+    ];
+
+    for (const body of cases) {
+      const res = await request(app)
+        .post('/v1/admin/indexer/reset')
+        .set('Authorization', `Bearer ${createToken()}`)
+        .send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'ledger must be a non-negative integer' });
+    }
+
+    expect(resetIndexer).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 and calls resetIndexer with parsed ledger for valid requests', async () => {
+    const validCases = [
+      { body: { ledger: 500 }, expected: 500 },
+      { body: { ledger: 0 }, expected: 0 },
+      { body: { ledger: '123' }, expected: 123 },
+    ];
+
+    for (const { body, expected } of validCases) {
+      const res = await request(app)
+        .post('/v1/admin/indexer/reset')
+        .set('Authorization', `Bearer ${createToken()}`)
+        .send(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, lastLedger: expected });
+      expect(resetIndexer).toHaveBeenCalledWith(expected);
+    }
+  });
+
+  it('returns 500 when resetIndexer throws an error', async () => {
+    vi.mocked(resetIndexer).mockRejectedValueOnce(new Error('Reset operation failed'));
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/reset')
+      .set('Authorization', `Bearer ${createToken()}`)
+      .send({ ledger: 100 });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Reset failed' });
+  });
+});
+
+describe('POST /v1/admin/indexer/replay', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
+    vi.mocked(replayFromLedger).mockResolvedValue(undefined as any);
+  });
+
+  it('enforces requireAdmin (401 without token, 403 with non-admin token)', async () => {
+    const noTokenRes = await request(app).post('/v1/admin/indexer/replay?from_ledger=100');
+    expect(noTokenRes.status).toBe(401);
+
+    const nonAdminRes = await request(app)
+      .post('/v1/admin/indexer/replay?from_ledger=100')
+      .set('Authorization', `Bearer ${createToken(NON_ADMIN_PUBLIC_KEY)}`);
+    expect(nonAdminRes.status).toBe(403);
+  });
+
+  it('returns 400 when from_ledger query parameter is missing, negative, or non-integer', async () => {
+    const queryUrls = [
+      '/v1/admin/indexer/replay',
+      '/v1/admin/indexer/replay?from_ledger=-1',
+      '/v1/admin/indexer/replay?from_ledger=-50',
+      '/v1/admin/indexer/replay?from_ledger=3.14',
+      '/v1/admin/indexer/replay?from_ledger=invalid',
+    ];
+
+    for (const url of queryUrls) {
+      const res = await request(app)
+        .post(url)
+        .set('Authorization', `Bearer ${createToken()}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'from_ledger must be a non-negative integer' });
+    }
+
+    expect(replayFromLedger).not.toHaveBeenCalled();
+  });
+
+  it('returns 202 and calls replayFromLedger with parsed from_ledger for valid requests', async () => {
+    const validCases = [
+      { url: '/v1/admin/indexer/replay?from_ledger=200', expected: 200 },
+      { url: '/v1/admin/indexer/replay?from_ledger=0', expected: 0 },
+    ];
+
+    for (const { url, expected } of validCases) {
+      const res = await request(app)
+        .post(url)
+        .set('Authorization', `Bearer ${createToken()}`);
+
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ ok: true, replayingFrom: expected });
+      expect(replayFromLedger).toHaveBeenCalledWith(expected);
+    }
+  });
+
+  it('returns 500 when replayFromLedger throws an error', async () => {
+    vi.mocked(replayFromLedger).mockRejectedValueOnce(new Error('Replay operation failed'));
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/replay?from_ledger=200')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Replay failed' });
+  });
+});
+
