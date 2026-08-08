@@ -41,7 +41,7 @@ jobs:
       # Frontend devDeps do not list @vitest/coverage-v8 (mirrors the
       # backend workflow), so install it ad-hoc before coverage runs.
       - name: Install Vitest Coverage Provider
-        run: npm install @vitest/coverage-v8@2.1.9 --no-save
+        run: npm install @vitest/coverage-v8@3.2.7 --no-save
         working-directory: frontend
 
       - name: Run Frontend Tests
