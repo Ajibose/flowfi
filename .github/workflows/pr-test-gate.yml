@@ -61,14 +61,8 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:password@127.0.0.1:5432/flowfi_test
 
-      # mirrors the ci.yml backend job: vitest's coverage provider is
-      # enabled by default in backend/vitest.config.ts, so the @vitest/
-      # coverage-v8 package must be present before `npm test` runs.
-      # Also installs the rollup native binding into backend/node_modules
-      # (where vitest actually resolves it from) rather than the root.
-      - name: Install Vitest + Native Bindings
+      - name: Install Native Bindings
         run: |
-          npm install @vitest/coverage-v8@2.1.9 --no-save
           npm install @rollup/rollup-linux-x64-gnu --no-save
         working-directory: backend
 
