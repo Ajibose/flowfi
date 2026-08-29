@@ -88,3 +88,50 @@ model StreamEvent {
   @@index([createdAt])
   @@index([streamId, timestamp])
 }
+
+// WebhookSubscription model - Outgoing webhook configuration for external integrations (Issue #1189)
+model WebhookSubscription {
+  id          String   @id @default(uuid())
+  userAddress String   // Stellar public key of the owner
+  targetUrl   String   // Destination webhook URL (must be HTTPS)
+  secretKey   String   // Secret used for HMAC-SHA256 signature
+  eventTypes  String[] // Array of subscribed event types (e.g., ["STREAM_CREATED", "TOKENS_WITHDRAWN"])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  deliveries  WebhookDelivery[]
+
+  @@index([userAddress])
+  @@index([isActive])
+}
+
+// WebhookDelivery model - Webhook delivery history and retry tracking (Issue #1189)
+model WebhookDelivery {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  eventType      String
+  payload        String   // JSON
+  responseStatus Int?
+  attempts       Int      @default(0)
+  deliveredAt    DateTime?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([createdAt])
+}
+
+// AlertHistory model - Tracks sent alerts to prevent duplicate notifications (Issue #1190)
+model AlertHistory {
+  id        String   @id @default(uuid())
+  streamId  BigInt
+  alertType String   // "WARNING_48H" or "CRITICAL_24H"
+  sentAt    DateTime @default(now())
+
+  @@unique([streamId, alertType, sentAt])
+  @@index([streamId])
+  @@index([sentAt])
+}
