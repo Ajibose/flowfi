@@ -185,4 +185,18 @@ describe('POST /v1/streams/:streamId/top-up', () => {
     expect(res.status).toBe(409);
     expect(res.body.message).toMatch(/paused stream/);
   });
+
+  it('leaves DB unchanged when topUpStream fails on-chain', async () => {
+    vi.mocked(topUpStream).mockRejectedValueOnce(
+      new Error('Transaction failed on-chain: tx_fail_post_submission')
+    );
+
+    const res = await request(app)
+      .post('/v1/streams/42/top-up')
+      .set('Authorization', 'Bearer dummy')
+      .send({ amount: '1000' });
+
+    expect(res.status).toBe(400);
+    expect(mockPrisma.stream.update).not.toHaveBeenCalled();
+  });
 });

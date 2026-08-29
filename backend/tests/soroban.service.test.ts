@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     getAccount: vi.fn(),
     simulateTransaction: vi.fn(),
     sendTransaction: vi.fn(),
+    getTransaction: vi.fn(),
   };
 
   return {
@@ -155,6 +156,154 @@ describe('Soroban Service', () => {
         submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
       ).rejects.toThrow('Transaction failed: "tx failed"');
       expect(assembledTx.sign).toHaveBeenCalledWith(sender);
+    });
+
+    it('polls getTransaction and returns tx hash when transaction succeeds on-chain', async () => {
+      const { submitContractCall } = await importService();
+      const sender = Keypair.random();
+      const assembledTx = { sign: vi.fn() };
+
+      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
+      mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
+      mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
+      mocks.server.sendTransaction.mockResolvedValue({
+        status: 'PENDING',
+        hash: 'tx-hash-success',
+      });
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        txHash: 'tx-hash-success',
+      });
+
+      const result = await submitContractCall(
+        'cancel_stream',
+        [nativeToScVal(1, { type: 'u64' })],
+        sender.secret()
+      );
+
+      expect(result).toBe('tx-hash-success');
+      expect(mocks.server.getTransaction).toHaveBeenCalledWith('tx-hash-success');
+    });
+
+    it('polls across pending NOT_FOUND statuses until SUCCESS', async () => {
+      const { submitContractCall } = await importService();
+      const sender = Keypair.random();
+      const assembledTx = { sign: vi.fn() };
+
+      process.env.SOROBAN_TX_POLL_INTERVAL_MS = '10';
+      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
+      mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
+      mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
+      mocks.server.sendTransaction.mockResolvedValue({
+        status: 'PENDING',
+        hash: 'tx-hash-eventual',
+      });
+      mocks.server.getTransaction
+        .mockResolvedValueOnce({
+          status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+          txHash: 'tx-hash-eventual',
+        })
+        .mockResolvedValueOnce({
+          status: rpc.Api.GetTransactionStatus.SUCCESS,
+          txHash: 'tx-hash-eventual',
+        });
+
+      const result = await submitContractCall(
+        'cancel_stream',
+        [nativeToScVal(1, { type: 'u64' })],
+        sender.secret()
+      );
+
+      expect(result).toBe('tx-hash-eventual');
+      expect(mocks.server.getTransaction).toHaveBeenCalledTimes(2);
+      delete process.env.SOROBAN_TX_POLL_INTERVAL_MS;
+    });
+
+    it('throws when getTransaction returns FAILED after mempool acceptance', async () => {
+      const { submitContractCall } = await importService();
+      const sender = Keypair.random();
+      const assembledTx = { sign: vi.fn() };
+
+      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
+      mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
+      mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
+      mocks.server.sendTransaction.mockResolvedValue({
+        status: 'PENDING',
+        hash: 'tx-hash-failed',
+      });
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.FAILED,
+        txHash: 'tx-hash-failed',
+      });
+
+      await expect(
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+      ).rejects.toThrow('Transaction failed on-chain: tx-hash-failed');
+    });
+
+    it('throws when transaction confirmation times out', async () => {
+      const { submitContractCall } = await importService();
+      const sender = Keypair.random();
+      const assembledTx = { sign: vi.fn() };
+
+      process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS = '50';
+      process.env.SOROBAN_TX_POLL_INTERVAL_MS = '10';
+      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
+      mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
+      mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
+      mocks.server.sendTransaction.mockResolvedValue({
+        status: 'PENDING',
+        hash: 'tx-hash-timeout',
+      });
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+        txHash: 'tx-hash-timeout',
+      });
+
+      await expect(
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+      ).rejects.toThrow(/Transaction confirmation timed out/);
+
+      delete process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS;
+      delete process.env.SOROBAN_TX_POLL_INTERVAL_MS;
+    });
+  });
+
+  describe('pollTransactionStatus', () => {
+    it('returns transaction response when status is SUCCESS', async () => {
+      const { pollTransactionStatus } = await importService();
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        txHash: 'tx-poll-success',
+      });
+
+      const res = await pollTransactionStatus('tx-poll-success', 5000, 10);
+      expect(res.status).toBe(rpc.Api.GetTransactionStatus.SUCCESS);
+      expect(mocks.server.getTransaction).toHaveBeenCalledWith('tx-poll-success');
+    });
+
+    it('throws with error details when status is FAILED', async () => {
+      const { pollTransactionStatus } = await importService();
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.FAILED,
+        txHash: 'tx-poll-failed',
+      });
+
+      await expect(pollTransactionStatus('tx-poll-failed', 5000, 10)).rejects.toThrow(
+        'Transaction failed on-chain: tx-poll-failed'
+      );
+    });
+
+    it('times out if transaction never reaches terminal status', async () => {
+      const { pollTransactionStatus } = await importService();
+      mocks.server.getTransaction.mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.NOT_FOUND,
+        txHash: 'tx-poll-pending',
+      });
+
+      await expect(pollTransactionStatus('tx-poll-pending', 50, 10)).rejects.toThrow(
+        'Transaction confirmation timed out after 50ms: tx-poll-pending'
+      );
     });
   });
 
