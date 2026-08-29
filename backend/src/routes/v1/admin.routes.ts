@@ -14,6 +14,7 @@ import { INDEXER_STATE_ID } from '../../lib/indexer-state.js';
 import { sseService } from '../../services/sse.service.js';
 import { cache } from '../../lib/redis.js';
 import logger from '../../logger.js';
+import { sorobanEventWorker } from '../../workers/soroban-event-worker.js';
 
 const router = Router();
 
@@ -105,6 +106,8 @@ async function buildAdminMetrics() {
     ? nowSec - Math.floor(indexerState.updatedAt.getTime() / 1000)
     : null;
 
+  const eventCounters = sorobanEventWorker.getEventCounters();
+
   return {
     // Snake_case summary requested by issue #426. Exposed at the top level so
     // operators (and future dashboards) can read aggregate counts without
@@ -139,9 +142,30 @@ async function buildAdminMetrics() {
       lastLedger: indexerState?.lastLedger ?? 0,
       lagSeconds,
       lastUpdated: indexerState?.updatedAt ?? null,
+      eventsProcessed: eventCounters.eventsProcessed,
+      eventsFailed: eventCounters.eventsFailed,
+      lastErrorAt: eventCounters.lastErrorAt,
+      degraded: eventCounters.degraded,
     },
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
+  };
+}
+
+/** Merge live in-memory indexer counters so a cache HIT still reflects spikes. */
+function withLiveIndexerCounters<
+  T extends { indexer: Record<string, unknown> },
+>(payload: T): T {
+  const counters = sorobanEventWorker.getEventCounters();
+  return {
+    ...payload,
+    indexer: {
+      ...payload.indexer,
+      eventsProcessed: counters.eventsProcessed,
+      eventsFailed: counters.eventsFailed,
+      lastErrorAt: counters.lastErrorAt,
+      degraded: counters.degraded,
+    },
   };
 }
 
@@ -152,7 +176,7 @@ router.get('/metrics', async (_req: Request, res: Response) => {
     );
     if (cached) {
       res.set('X-Cache', 'HIT');
-      res.json(cached);
+      res.json(withLiveIndexerCounters(cached));
       return;
     }
 
@@ -245,8 +269,8 @@ router.post('/indexer/replay', async (req: Request, res: Response) => {
     return;
   }
   try {
-    await replayFromLedger(fromLedger);
-    res.status(202).json({ ok: true, replayingFrom: fromLedger });
+    const requestId = await replayFromLedger(fromLedger);
+    res.status(202).json({ ok: true, replayingFrom: fromLedger, requestId });
   } catch (err) {
     res.status(500).json({ error: 'Replay failed' });
   }
