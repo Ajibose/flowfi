@@ -1,7 +1,13 @@
-import { Router } from 'express';
-import { registerUser, getUser, getUserEvents, getCurrentUser } from '../../controllers/user.controller.js';
-import { getUserStreamSummary } from '../../controllers/stream.controller.js';
-import { requireAuth } from '../../middleware/auth.js';
+import { Router } from "express";
+import {
+  registerUser,
+  getUser,
+  getUserEvents,
+  getCurrentUser,
+  exportTransactions,
+} from "../../controllers/user.controller.js";
+import { getUserStreamSummary } from "../../controllers/stream.controller.js";
+import { requireAuth } from "../../middleware/auth.js";
 
 const router = Router();
 
@@ -41,7 +47,7 @@ const router = Router();
  *               $ref: '#/components/schemas/User'
  *       400:
  *         description: Invalid request body
- * 
+ *
  * /v1/users/{publicKey}:
  *   get:
  *     tags:
@@ -83,8 +89,8 @@ const router = Router();
  *       401:
  *         description: Unauthorized - invalid or missing token
  */
-router.post('/', registerUser);
-router.get('/me', requireAuth, getCurrentUser);
+router.post("/", registerUser);
+router.get("/me", requireAuth, getCurrentUser);
 /**
  * @openapi
  * /v1/users/{address}/summary:
@@ -128,8 +134,8 @@ router.get('/me', requireAuth, getCurrentUser);
  *                 activeIncomingCount:
  *                   type: integer
  */
-router.get('/:address/summary', getUserStreamSummary);
-router.get('/:publicKey', getUser);
+router.get("/:address/summary", getUserStreamSummary);
+router.get("/:publicKey", getUser);
 
 /**
  * @openapi
@@ -182,6 +188,68 @@ router.get('/:publicKey', getUser);
  *       404:
  *         description: User not found
  */
-router.get('/:publicKey/events', getUserEvents);
+router.get("/:publicKey/events", getUserEvents);
 
 export default router;
+
+/**
+ * @openapi
+ * /v1/users/{address}/export:
+ *   get:
+ *     tags:
+ *       - Users
+ *     summary: Export transaction history for tax and accounting
+ *     description: Generates CSV or JSON export of stream transactions for QuickBooks, Xero, CoinTracker, etc.
+ *     parameters:
+ *       - in: path
+ *         name: address
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Stellar public key
+ *       - in: query
+ *         name: format
+ *         schema:
+ *           type: string
+ *           enum: [csv, json]
+ *           default: csv
+ *         description: Export format
+ *       - in: query
+ *         name: direction
+ *         schema:
+ *           type: string
+ *           enum: [incoming, outgoing, all]
+ *           default: all
+ *         description: Filter by transaction direction
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *         description: Start date (ISO 8601 or Unix timestamp)
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *         description: End date (ISO 8601 or Unix timestamp)
+ *       - in: query
+ *         name: tokenAddress
+ *         schema:
+ *           type: string
+ *         description: Filter by specific token contract
+ *     responses:
+ *       200:
+ *         description: Transaction export file
+ *         content:
+ *           text/csv:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid parameters
+ */
+router.get("/:address/export", exportTransactions);

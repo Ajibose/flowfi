@@ -27,7 +27,7 @@ model User {
 // Stream model - mirrors on-chain stream state for fast querying
 model Stream {
   id                String    @id @default(uuid())
-  streamId          Int       @unique // On-chain stream ID
+  streamId          BigInt    @unique // On-chain stream ID (Soroban u64)
   sender            String    // Sender's Stellar public key
   recipient         String    // Recipient's Stellar public key
   tokenAddress      String    // Token contract address
@@ -68,7 +68,7 @@ model IndexerState {
 // StreamEvent model - indexer events for tracking all on-chain stream activities
 model StreamEvent {
   id              String   @id @default(uuid())
-  streamId        Int      // Reference to on-chain stream ID
+  streamId        BigInt   // Reference to on-chain stream ID (Soroban u64)
   eventType       String   // EventType: "CREATED", "TOPPED_UP", "WITHDRAWN", "CANCELLED", "COMPLETED", "PAUSED", "RESUMED"
   amount          String?  // Amount involved in the event (for top-ups, withdrawals)
   transactionHash String   // Stellar transaction hash
@@ -86,5 +86,52 @@ model StreamEvent {
   @@index([timestamp])
   @@index([transactionHash])
   @@index([createdAt])
-  @@index([streamId, createdAt])
+  @@index([streamId, timestamp])
+}
+
+// WebhookSubscription model - Outgoing webhook configuration for external integrations (Issue #1189)
+model WebhookSubscription {
+  id          String   @id @default(uuid())
+  userAddress String   // Stellar public key of the owner
+  targetUrl   String   // Destination webhook URL (must be HTTPS)
+  secretKey   String   // Secret used for HMAC-SHA256 signature
+  eventTypes  String[] // Array of subscribed event types (e.g., ["STREAM_CREATED", "TOKENS_WITHDRAWN"])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  deliveries  WebhookDelivery[]
+
+  @@index([userAddress])
+  @@index([isActive])
+}
+
+// WebhookDelivery model - Webhook delivery history and retry tracking (Issue #1189)
+model WebhookDelivery {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  eventType      String
+  payload        String   // JSON
+  responseStatus Int?
+  attempts       Int      @default(0)
+  deliveredAt    DateTime?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([createdAt])
+}
+
+// AlertHistory model - Tracks sent alerts to prevent duplicate notifications (Issue #1190)
+model AlertHistory {
+  id        String   @id @default(uuid())
+  streamId  BigInt
+  alertType String   // "WARNING_48H" or "CRITICAL_24H"
+  sentAt    DateTime @default(now())
+
+  @@unique([streamId, alertType, sentAt])
+  @@index([streamId])
+  @@index([sentAt])
 }

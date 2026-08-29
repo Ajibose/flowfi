@@ -1,46 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { rpc } from '@stellar/stellar-sdk';
 
+const mockPrismaObj = vi.hoisted(() => ({
+  indexerState: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    upsert: vi.fn(),
+  },
+  user: {
+    upsert: vi.fn(),
+  },
+  stream: {
+    upsert: vi.fn(),
+    findUniqueOrThrow: vi.fn(),
+  },
+  streamEvent: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    create: vi.fn(),
+  },
+  $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
+  $disconnect: vi.fn(),
+}));
+
 // Mock prisma before importing the worker
 vi.mock('../src/lib/prisma.js', () => ({
-  default: {
-    indexerState: {
-      upsert: vi.fn(),
-    },
-    user: {
-      upsert: vi.fn(),
-    },
-    stream: {
-      upsert: vi.fn(),
-      findUniqueOrThrow: vi.fn(),
-    },
-    streamEvent: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      create: vi.fn(),
-    },
-    $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
-    $disconnect: vi.fn(),
-  },
-  prisma: {
-    indexerState: {
-      upsert: vi.fn(),
-    },
-    user: {
-      upsert: vi.fn(),
-    },
-    stream: {
-      upsert: vi.fn(),
-      findUniqueOrThrow: vi.fn(),
-    },
-    streamEvent: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      create: vi.fn(),
-    },
-    $transaction: vi.fn((cb) => cb({ streamEvent: { findUnique: vi.fn(), upsert: vi.fn() }, user: { upsert: vi.fn() }, stream: { upsert: vi.fn(), update: vi.fn() } })),
-    $disconnect: vi.fn(),
-  },
+  default: mockPrismaObj,
+  prisma: mockPrismaObj,
 }));
 
 // Mock SSE service
@@ -53,13 +39,17 @@ vi.mock('../src/services/sse.service.js', () => ({
 }));
 
 // Mock logger
-vi.mock('../src/logger.js', () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock('../src/logger.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/logger.js')>();
+  return {
+    ...actual,
+    default: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+});
 
 import { SorobanEventWorker } from '../src/workers/soroban-event-worker.js';
 import { prisma } from '../src/lib/prisma.js';
@@ -326,7 +316,7 @@ describe('SorobanEventWorker', () => {
       expect(mockTx.streamEvent.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
-            streamId: 0,
+            streamId: 0n,
             eventType: 'FEE_CONFIG_UPDATED',
             transactionHash: txHash,
             ledgerSequence: 1005,
@@ -490,7 +480,7 @@ describe('SorobanEventWorker', () => {
       await expect((worker as any).handleTokensWithdrawn(mockEvent, mockEvent.topic![1])).resolves.not.toThrow();
       expect(mockTx.stream.update).toHaveBeenCalledTimes(1);
       expect(mockTx.stream.update).toHaveBeenCalledWith({
-        where: { streamId },
+        where: { streamId: BigInt(streamId) },
         data: { withdrawnAmount: '1500', lastUpdateTime: 1700002000 },
       });
       expect(mockTx.streamEvent.upsert).toHaveBeenCalledTimes(1);
@@ -575,7 +565,7 @@ describe('SorobanEventWorker', () => {
       // Sanity check: depositedAmount/endTime from the (only) applied update
       // match what a single application should produce.
       expect(firstUpdateArgs.data.depositedAmount).toBe('1200');
-      expect(expectedEndTime).toBe(1700000000 + Math.floor(1200 / 10) + 0);
+      expect(expectedEndTime).toBe(1700000000n + BigInt(Math.floor(1200 / 10)));
     });
 
     it('should process admin_transferred events successfully', async () => {
@@ -604,7 +594,7 @@ describe('SorobanEventWorker', () => {
 
       const mockTx = {
         user: { upsert: vi.fn().mockResolvedValue({}) },
-        stream: { upsert: vi.fn().mockResolvedValue({ streamId: 0, isActive: false }) },
+        stream: { upsert: vi.fn().mockResolvedValue({ streamId: 0n, isActive: false }) },
         streamEvent: {
           findUnique: vi.fn().mockResolvedValue(null),
           upsert: vi.fn().mockResolvedValue({ id: 'event-admin-transferred' }),
@@ -622,13 +612,273 @@ describe('SorobanEventWorker', () => {
       expect(mockTx.streamEvent.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
-            streamId: 0,
+            streamId: 0n,
             eventType: 'ADMIN_TRANSFERRED',
             transactionHash: txHash,
             ledgerSequence: 1006,
           }),
         })
       );
+    });
+
+    it('persists a u64 streamId above int4 max (2^31-1) without Number coercion (#829)', async () => {
+      // int4 max is 2_147_483_647; this value would previously fail with
+      // "value out of range for type integer" on insert.
+      const streamId = 3_000_000_000n;
+      const txHash = 'large-u64-stream-id-tx';
+
+      const mockEvent: rpc.Api.EventResponse = {
+        id: 'large-u64-event-1',
+        type: 'contract',
+        ledger: 5000,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash,
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'stream_created' } as any,
+          { switch: () => ({ value: 1 }), u64: () => ({ toString: () => streamId.toString() }) } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [
+            { key: () => ({ sym: () => 'sender' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'recipient' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'token_address' }), val: () => ({ address: () => ({ switch: () => ({ value: 1 }), contractId: () => Buffer.alloc(32) }) }) },
+            { key: () => ({ sym: () => 'rate_per_second' }), val: () => ({ i128: () => ({ hi: () => ({ toString: () => '0' }), lo: () => ({ toString: () => '100' }) }) }) },
+            { key: () => ({ sym: () => 'deposited_amount' }), val: () => ({ i128: () => ({ hi: () => ({ toString: () => '0' }), lo: () => ({ toString: () => '86400' }) }) }) },
+            { key: () => ({ sym: () => 'start_time' }), val: () => ({ u64: () => ({ toString: () => '1700000000' }) }) },
+          ] as any,
+        } as any,
+      };
+
+      let capturedStreamUpsert: any = null;
+      let capturedEventUpsert: any = null;
+      const mockTx = {
+        user: { upsert: vi.fn().mockResolvedValue({}) },
+        stream: {
+          upsert: vi.fn().mockImplementation((args) => {
+            capturedStreamUpsert = args;
+            return Promise.resolve({ streamId, isActive: true });
+          }),
+        },
+        streamEvent: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          upsert: vi.fn().mockImplementation((args) => {
+            capturedEventUpsert = args;
+            return Promise.resolve({ id: 'event-large-u64' });
+          }),
+        },
+      };
+
+      (prisma.$transaction as ReturnType<typeof vi.fn>).mockImplementation((cb) => cb(mockTx));
+
+      await expect(
+        (worker as any).handleStreamCreated(mockEvent, mockEvent.topic![1]),
+      ).resolves.not.toThrow();
+
+      expect(capturedStreamUpsert?.where?.streamId).toBe(streamId);
+      expect(capturedStreamUpsert?.create?.streamId).toBe(streamId);
+      expect(typeof capturedStreamUpsert?.create?.streamId).toBe('bigint');
+      expect(capturedStreamUpsert.create.streamId > 2_147_483_647n).toBe(true);
+
+      expect(capturedEventUpsert?.create?.streamId).toBe(streamId);
+      expect(typeof capturedEventUpsert?.create?.streamId).toBe('bigint');
+    });
+
+    it('cursor_does_not_advance_past_failed_event_in_mixed_batch', async () => {
+      // Setup initial state: lastCursor is 'cursor-initial'
+      (prisma.indexerState.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'singleton',
+        lastLedger: 100,
+        lastCursor: 'cursor-initial',
+        updatedAt: new Date(),
+      });
+      (prisma.indexerState.upsert as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: 'singleton',
+        lastLedger: 100,
+        lastCursor: 'cursor-initial',
+        updatedAt: new Date(),
+      });
+
+      // Event 1: Missing required body fields for fee_config_updated -> handleFeeConfigUpdated throws
+      const event1: rpc.Api.EventResponse = {
+        id: 'cursor-event-1',
+        type: 'contract',
+        ledger: 101,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-failed-1',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'fee_config_updated' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [] as any,
+        } as any,
+      };
+
+      // Event 2: Valid admin_transferred event
+      const event2: rpc.Api.EventResponse = {
+        id: 'cursor-event-2',
+        type: 'contract',
+        ledger: 102,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-success-2',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'admin_transferred' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [
+            { key: () => ({ sym: () => 'previous_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'new_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+          ] as any,
+        } as any,
+      };
+
+      // Event 3: Valid admin_transferred event
+      const event3: rpc.Api.EventResponse = {
+        id: 'cursor-event-3',
+        type: 'contract',
+        ledger: 103,
+        ledgerClosedAt: '2024-01-01T00:00:00Z',
+        txHash: 'tx-success-3',
+        transactionIndex: 0,
+        operationIndex: 0,
+        inSuccessfulContractCall: true,
+        topic: [
+          { switch: () => ({ value: 0 }), sym: () => 'admin_transferred' } as any,
+        ],
+        value: {
+          switch: () => ({ value: 4 }),
+          map: () => [
+            { key: () => ({ sym: () => 'previous_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+            { key: () => ({ sym: () => 'new_admin' }), val: () => ({ address: () => ({ switch: () => ({ value: 0 }), accountId: () => ({ ed25519: () => Buffer.alloc(32) }) }) }) },
+          ] as any,
+        } as any,
+      };
+
+      // Mock getEvents on worker.server
+      vi.spyOn((worker as any).server, 'getEvents').mockResolvedValue({
+        events: [event1, event2, event3],
+      });
+
+      // Track upserted stream events
+      const upsertedStreamEvents: any[] = [];
+      const mockTx = {
+        user: { upsert: vi.fn().mockResolvedValue({}) },
+        stream: { upsert: vi.fn().mockResolvedValue({ streamId: 0n, isActive: false }) },
+        streamEvent: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          upsert: vi.fn().mockImplementation((args) => {
+            upsertedStreamEvents.push(args);
+            return Promise.resolve({ id: 'event-id' });
+          }),
+        },
+      };
+
+      (prisma.$transaction as ReturnType<typeof vi.fn>).mockImplementation((cb) => cb(mockTx));
+
+      // Run fetchAndProcessEvents
+      await (worker as any).fetchAndProcessEvents();
+
+      // Assert successful later events (event2 and event3) were written exactly once each
+      const event1Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-failed-1'
+      );
+      const event2Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-success-2'
+      );
+      const event3Writes = upsertedStreamEvents.filter(
+        (e) => e.create?.transactionHash === 'tx-success-3'
+      );
+
+      expect(event1Writes.length).toBe(0);
+      expect(event2Writes.length).toBe(1);
+      expect(event3Writes.length).toBe(1);
+
+      // Assert: persisted IndexerState.lastCursor is NOT advanced past the failed event's position
+      // (i.e. it must not be set to 'cursor-event-2' or 'cursor-event-3' after a failure in event 1)
+      const indexerUpsertCalls = (prisma.indexerState.upsert as ReturnType<typeof vi.fn>).mock.calls;
+      const lastSaveCall = indexerUpsertCalls[indexerUpsertCalls.length - 1]![0];
+
+      expect(lastSaveCall.update.lastCursor).not.toBe('cursor-event-2');
+      expect(lastSaveCall.update.lastCursor).not.toBe('cursor-event-3');
+    });
+  });
+
+  describe('poll / triggerPoll serialization (#843)', () => {
+    it('does not run fetchAndProcessEvents concurrently for overlapping poll and triggerPoll', async () => {
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      const releases: Array<() => void> = [];
+
+      const fetchSpy = vi
+        .spyOn(worker as any, 'fetchAndProcessEvents')
+        .mockImplementation(async () => {
+          concurrent += 1;
+          maxConcurrent = Math.max(maxConcurrent, concurrent);
+          await new Promise<void>((resolve) => {
+            releases.push(resolve);
+          });
+          concurrent -= 1;
+        });
+
+      // Avoid scheduling real timers from poll()'s finally
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const pollPromise = (worker as any).poll();
+      const triggerPromise = worker.triggerPoll();
+
+      await vi.waitFor(() => expect(releases.length).toBe(1));
+      expect(concurrent).toBe(1);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(releases.length).toBe(2));
+      expect(concurrent).toBe(1);
+
+      releases[1]!();
+      await Promise.all([pollPromise, triggerPromise]);
+
+      expect(maxConcurrent).toBe(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('waitForDrain awaits an in-flight triggerPoll batch', async () => {
+      let resolveFetch!: () => void;
+      vi.spyOn(worker as any, 'fetchAndProcessEvents').mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      );
+      vi.spyOn(worker as any, 'scheduleNext').mockImplementation(() => {});
+      (worker as any).isRunning = true;
+
+      const triggerPromise = worker.triggerPoll();
+      // activeBatch is registered synchronously in runExclusive
+      expect((worker as any).activeBatch).not.toBeNull();
+
+      let drained = false;
+      const drainPromise = worker.waitForDrain().then(() => {
+        drained = true;
+      });
+
+      await Promise.resolve();
+      expect(drained).toBe(false);
+
+      resolveFetch();
+      await Promise.all([triggerPromise, drainPromise]);
+      expect(drained).toBe(true);
+      expect((worker as any).activeBatch).toBeNull();
     });
   });
 });
