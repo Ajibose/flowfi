@@ -1,4 +1,4 @@
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import React from "react";
@@ -74,21 +74,36 @@ describe("useIncomingStreams hooks", () => {
       );
 
       await expect(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         result.current.mutateAsync({} as any)
       ).rejects.toThrow("Please connect your wallet first");
       expect(withdrawFromStream).not.toHaveBeenCalled();
     });
 
     it("invalidates incomingStreamsQueryKey(publicKey) on success", async () => {
+      vi.useFakeTimers();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (withdrawFromStream as any).mockResolvedValue({ status: "success" });
-      (fetchIncomingStreams as any).mockResolvedValue([]);
-      
+
+      // Return updated stream so pollIndexerForWithdraw exits on first poll
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fetchIncomingStreams as any).mockResolvedValue([
+        {
+          id: 1,
+          streamId: 1,
+          withdrawn: 1,
+          deposited: 100,
+          ratePerSecond: 1,
+          isPaused: false,
+          lastUpdateTime: Date.now() / 1000,
+        },
+      ]);
+
       const { result } = renderHook(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         () => useWithdrawIncomingStream({} as any, "pubkey"),
         { wrapper }
       );
-
-      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
       await act(async () => {
         await result.current.mutateAsync({
@@ -99,15 +114,26 @@ describe("useIncomingStreams hooks", () => {
           ratePerSecond: 1,
           isPaused: false,
           lastUpdateTime: Date.now() / 1000,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
       });
 
-      // Wait for pollIndexerForWithdraw to complete and call invalidateQueries
-      await waitFor(() => {
-        expect(invalidateSpy).toHaveBeenCalledWith({
-          queryKey: incomingStreamsQueryKey("pubkey"),
-        });
-      }, { timeout: 10000 });
+      // Advance past the first poll delay (1s) — the mock returns updated
+      // stream with withdrawn > 0, so pollIndexerForWithdraw exits early
+      // and calls setQueryData (not invalidateQueries in this path).
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+
+      // The poll should have set query data with the updated stream
+      const cached = queryClient.getQueryData(
+        incomingStreamsQueryKey("pubkey")
+      );
+      expect(cached).toEqual([
+        expect.objectContaining({ streamId: 1, withdrawn: 1 }),
+      ]);
+
+      vi.useRealTimers();
     });
   });
 });
