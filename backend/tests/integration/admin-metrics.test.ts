@@ -149,6 +149,35 @@ function setupCounts({
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+describe('GET /v1/events/stats', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
+  });
+
+  it('enforces requireAdmin (401 without token, 403 with non-admin token)', async () => {
+    const noTokenRes = await request(app).get('/v1/events/stats');
+    expect(noTokenRes.status).toBe(401);
+
+    const nonAdminRes = await request(app)
+      .get('/v1/events/stats')
+      .set('Authorization', `Bearer ${createToken(NON_ADMIN_PUBLIC_KEY)}`);
+    expect(nonAdminRes.status).toBe(403);
+
+    const adminRes = await request(app)
+      .get('/v1/events/stats')
+      .set('Authorization', `Bearer ${createToken()}`);
+    expect(adminRes.status).toBe(200);
+    expect(adminRes.body).toMatchObject({
+      activeConnections: expect.any(Number),
+      activeIps: expect.any(Number),
+      perIpPeakConnections: expect.any(Number),
+      maxConnections: expect.any(Number),
+      timestamp: expect.any(String),
+    });
+  });
+});
+
 describe('GET /v1/admin/metrics', () => {
   beforeEach(() => {
     vi.clearAllMocks();
