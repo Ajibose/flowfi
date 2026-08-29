@@ -1,7 +1,26 @@
+/**
+ * Indexer control-plane helpers (status / reset / replay).
+ *
+ * NOTE ON NAMING: Despite the `indexerService` name, this file is NOT an
+ * indexer. It is the admin/control-plane helper for the source-of-truth
+ * indexer, `SorobanEventWorker` (backend/src/workers/soroban-event-worker.ts).
+ * The functions here only read/reset the shared `IndexerState` cursor row and
+ * trigger the worker's poll loop. It is intentionally named like the legacy
+ * indexer below to document that this helper is the "other" indexer entry
+ * point — see backend/src/services/soroban-indexer.service.ts, which is the
+ * LEGACY indexer being phased out. See docs/ARCHITECTURE.md for the full
+ * indexer ownership model.
+ *
+ * NAMING CONVENTION PLAN: once the functional consolidation of the two
+ * indexers lands (issue #801), this file is expected to be renamed to
+ * `indexer.service.ts` so every service is kebab-case with a `.service.ts`
+ * suffix.
+ */
+import { randomUUID } from 'crypto';
 import { prisma } from '../lib/prisma.js';
 import { INDEXER_STATE_ID } from '../lib/indexer-state.js';
 import { sorobanEventWorker } from '../workers/soroban-event-worker.js';
-import logger from '../logger.js';
+import logger, { requestContext } from '../logger.js';
 
 export interface IndexerStatus {
   lastLedger: number;
@@ -45,10 +64,24 @@ export async function resetIndexer(toLedger: number): Promise<void> {
  * Stream.withdrawnAmount (handleTokensWithdrawn, soroban-event-worker.ts:635)
  * is incremented unconditionally on every replay, so replay is NOT fully
  * idempotent. See issue #808 for the withdrawnAmount idempotency fix.
+ *
+ * @param fromLedger Starting ledger sequence to replay from
+ * @param customRequestId Optional correlation ID to bind logs to
+ * @returns The correlation requestId associated with this replay cycle
  */
-export async function replayFromLedger(fromLedger: number): Promise<void> {
-  await resetIndexer(fromLedger);
-  // Kick off an immediate poll cycle without waiting for the next interval.
-  await sorobanEventWorker.triggerPoll();
-  logger.info(`[IndexerService] Replay triggered from ledger ${fromLedger}`);
+export async function replayFromLedger(
+  fromLedger: number,
+  customRequestId?: string,
+): Promise<string> {
+  const requestId =
+    customRequestId || requestContext.getStore()?.requestId || randomUUID();
+
+  return requestContext.run({ requestId }, async () => {
+    await resetIndexer(fromLedger);
+    // Kick off an immediate poll cycle without waiting for the next interval.
+    await sorobanEventWorker.triggerPoll(requestId);
+    logger.info(`[IndexerService] Replay triggered from ledger ${fromLedger}`);
+    return requestId;
+  });
 }
+
