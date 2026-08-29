@@ -35,6 +35,16 @@ const RPC_MAX_RETRIES = Number(process.env.SOROBAN_RPC_MAX_RETRIES ?? 2);
 /** Base delay for exponential backoff between retries (doubles each attempt). */
 const RPC_RETRY_BASE_MS = Number(process.env.SOROBAN_RPC_RETRY_BASE_MS ?? 250);
 
+/** Bounded deadline for awaiting on-chain transaction finality (default 30s). */
+function getTxConfirmationTimeoutMs(): number {
+  return Number(process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS ?? 30_000);
+}
+
+/** Polling interval when awaiting on-chain transaction finality (default 1s). */
+function getTxPollIntervalMs(): number {
+  return Number(process.env.SOROBAN_TX_POLL_INTERVAL_MS ?? 1_000);
+}
+
 export class RpcTimeoutError extends Error {
   constructor(label: string, timeoutMs: number) {
     super(`${label} timed out after ${timeoutMs}ms`);
@@ -256,7 +266,50 @@ export async function submitContractCall(method: string, args: xdr.ScVal[], send
     throw new Error(`Transaction failed: ${JSON.stringify(response.errorResult)}`);
   }
 
+  await pollTransactionStatus(response.hash);
+
   return response.hash;
+}
+
+/**
+ * Poll Soroban RPC getTransaction until the transaction reaches a terminal status
+ * (SUCCESS or FAILED) or until the bounded timeout expires.
+ */
+export async function pollTransactionStatus(
+  txHash: string,
+  timeoutMs: number = getTxConfirmationTimeoutMs(),
+  pollIntervalMs: number = getTxPollIntervalMs(),
+): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    const txResponse = await withRpcRetry('getTransaction', () =>
+      withRpcTimeout('getTransaction', () => getServer().getTransaction(txHash)),
+    );
+
+    if (
+      txResponse.status === rpc.Api.GetTransactionStatus.SUCCESS ||
+      (txResponse.status as string) === 'SUCCESS'
+    ) {
+      return txResponse as rpc.Api.GetSuccessfulTransactionResponse;
+    }
+
+    if (
+      txResponse.status === rpc.Api.GetTransactionStatus.FAILED ||
+      (txResponse.status as string) === 'FAILED'
+    ) {
+      const errorDetail = (txResponse as rpc.Api.GetFailedTransactionResponse).resultXdr
+        ? ` (resultXdr: ${(txResponse as rpc.Api.GetFailedTransactionResponse).resultXdr.toXDR('base64')})`
+        : '';
+      throw new Error(`Transaction failed on-chain: ${txHash}${errorDetail}`);
+    }
+
+    if (pollIntervalMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+  }
+
+  throw new Error(`Transaction confirmation timed out after ${timeoutMs}ms: ${txHash}`);
 }
 
 export async function getStreamFromChain(streamId: bigint): Promise<ChainStream | null> {
