@@ -1,6 +1,10 @@
 /**
- * Redis / In-Memory Cache Service
- * Used for horizontal SSE scaling and claimable amount caching (Issue #377)
+ * Redis Pub/Sub Service and Per-Instance Memory Cache
+ *
+ * Redis (when configured) provides horizontal SSE scaling via pub/sub.
+ * The claimable-amount cache is a per-process in-memory Map (MemoryCache),
+ * NOT Redis-backed.  Each instance computes and caches independently, so
+ * cached values are not shared across horizontal replicas.
  */
 import { Redis } from 'ioredis';
 import logger from '../logger.js';
@@ -11,7 +15,9 @@ let _publisher: Redis | null = null;
 let _subscriber: Redis | null = null;
 let _available = false;
 
-// --- Memory Cache for Claimable Amounts (Issue #377) ---
+// --- Per-Instance In-Memory Cache for Claimable Amounts (Issue #377) ---
+// NOTE: This cache lives in-process only. It is NOT shared via Redis and
+// will not be consistent across horizontally scaled instances.
 interface CacheItem<T> {
   value: T;
   expiresAt: number;
