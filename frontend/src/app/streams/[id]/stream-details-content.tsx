@@ -22,6 +22,7 @@ import { CancelConfirmModal } from "@/components/stream-creation/CancelConfirmMo
 import type { BackendStreamEvent } from "@/lib/api-types";
 import { formatAmount, streamProgressPercent } from "@/utils/amount";
 import { shortenPublicKey } from "@/lib/wallet";
+import { LiquidStreamVisualizer } from "@/components/LiquidStreamVisualizer";
 
 interface StreamDetail {
   id: string;
@@ -394,6 +395,17 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
           <div className="ml-auto">
             <StatusBadge status={stream.status} isPaused={stream.isPaused} />
           </div>
+        </div>
+
+        {/* Liquid Stream Visualizer */}
+        <div className="glass-card p-4">
+          <h3 className="text-sm font-medium text-slate-400 mb-3">Live Stream Flow</h3>
+          <LiquidStreamVisualizer
+            ratePerSecond={Number(stream.ratePerSecond) / 10 ** 7}
+            status={stream.isPaused ? "paused" : stream.isActive ? "active" : "completed"}
+            senderLabel={shortenPublicKey(stream.sender)}
+            recipientLabel={shortenPublicKey(stream.recipient)}
+          />
         </div>
 
         {/* Stream Overview */}
