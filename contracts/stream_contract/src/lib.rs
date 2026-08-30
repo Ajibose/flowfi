@@ -205,6 +205,7 @@ impl StreamContract {
     /// - `InvalidDuration` — `duration` is 0.
     /// - `InvalidRate`     — `net_amount / duration` rounds to zero.
     /// - `InvalidTokenAddress` — `token_address` is not a token contract.
+    /// - `ArithmeticOverflow` — the protocol fee calculation overflows `i128`.
     pub fn create_stream(
         env: Env,
         sender: Address,
@@ -232,7 +233,7 @@ impl StreamContract {
         token_client.transfer(&sender, &contract_address, &amount);
 
         // Deduct protocol fee; returns net amount (== amount when no fee config).
-        let net_amount = Self::collect_fee(&env, &token_address, amount, stream_id);
+        let net_amount = Self::collect_fee(&env, &token_address, amount, stream_id)?;
         let rate_per_second = net_amount / (duration as i128);
 
         // Reject streams where integer division rounds the rate to zero.
@@ -338,7 +339,8 @@ impl StreamContract {
         for input in streams.iter() {
             let stream_id = next_stream_id(&env);
             let start_time = env.ledger().timestamp();
-            let net_amount = Self::collect_fee(&env, &input.token_address, input.amount, stream_id);
+            let net_amount =
+                Self::collect_fee(&env, &input.token_address, input.amount, stream_id)?;
             let cliff_time = input.cliff_duration.map(|duration| start_time + duration);
             let stream = Stream {
                 sender: sender.clone(),
@@ -395,7 +397,7 @@ impl StreamContract {
         let start_time = env.ledger().timestamp();
         let contract_address = env.current_contract_address();
         token::Client::new(&env, &token_address).transfer(&sender, &contract_address, &amount);
-        let net_amount = Self::collect_fee(&env, &token_address, amount, stream_id);
+        let net_amount = Self::collect_fee(&env, &token_address, amount, stream_id)?;
         let rate_per_second = net_amount / duration as i128;
         if rate_per_second == 0 {
             return Err(StreamError::InvalidRate);
@@ -494,6 +496,8 @@ impl StreamContract {
     /// - `StreamNotFound`  — no stream exists with `stream_id`.
     /// - `Unauthorized`    — caller is not the stream's sender.
     /// - `StreamInactive`  — stream has been cancelled or fully withdrawn.
+    /// - `ArithmeticOverflow` — the fee calculation, the new deposited total,
+    ///   or the projected end time overflows.
     pub fn top_up_stream(
         env: Env,
         sender: Address,
@@ -518,12 +522,15 @@ impl StreamContract {
         token_client.transfer(&sender, &contract_address, &amount);
 
         // Collect protocol fee and get net amount
-        let net_amount = Self::collect_fee(&env, &stream.token_address, amount, stream_id);
+        let net_amount = Self::collect_fee(&env, &stream.token_address, amount, stream_id)?;
 
         // Update stream state. `last_update_time` is intentionally left untouched:
         // it is the accrual anchor for `calculate_claimable`, and advancing it to
         // `now` would discard any already-vested, unwithdrawn tokens.
-        stream.deposited_amount += net_amount;
+        stream.deposited_amount = stream
+            .deposited_amount
+            .checked_add(net_amount)
+            .ok_or(StreamError::ArithmeticOverflow)?;
 
         let now = env.ledger().timestamp();
         let claimable = Self::calculate_claimable(&stream, now);
@@ -531,7 +538,7 @@ impl StreamContract {
             .deposited_amount
             .saturating_sub(stream.withdrawn_amount)
             .saturating_sub(claimable);
-        let new_end_time = now + (remaining / stream.rate_per_second) as u64;
+        let new_end_time = Self::project_end_time(now, remaining, stream.rate_per_second)?;
 
         save_stream(&env, stream_id, &stream);
 
@@ -619,6 +626,27 @@ impl StreamContract {
         Ok(())
     }
 
+    /// Project the timestamp at which `remaining` tokens finish draining at
+    /// `rate_per_second`, starting from `now`.
+    ///
+    /// Both steps are checked. A balance large enough to drain for more than
+    /// `u64::MAX` seconds, or a projection that runs past the end of the u64
+    /// timestamp range, returns `ArithmeticOverflow`. The plain
+    /// `now + (remaining / rate) as u64` this replaces silently truncated the
+    /// quotient and then panicked on the addition under `overflow-checks`,
+    /// aborting an otherwise valid top-up or resume.
+    fn project_end_time(
+        now: u64,
+        remaining: i128,
+        rate_per_second: i128,
+    ) -> Result<u64, StreamError> {
+        let seconds_remaining = u64::try_from(remaining / rate_per_second)
+            .map_err(|_| StreamError::ArithmeticOverflow)?;
+
+        now.checked_add(seconds_remaining)
+            .ok_or(StreamError::ArithmeticOverflow)
+    }
+
     /// Validate that a stream is active.
     ///
     /// # Errors
@@ -643,9 +671,13 @@ impl StreamContract {
         recipient: &Address,
         amount: i128,
         now: u64,
-    ) {
-        // Effects: update stream state
-        stream.withdrawn_amount += amount;
+    ) -> Result<(), StreamError> {
+        // Effects: update stream state. The checked add runs before any state
+        // mutation or transfer, so an overflow leaves the stream untouched.
+        stream.withdrawn_amount = stream
+            .withdrawn_amount
+            .checked_add(amount)
+            .ok_or(StreamError::ArithmeticOverflow)?;
         stream.last_update_time = now;
 
         if stream.withdrawn_amount >= stream.deposited_amount {
@@ -659,6 +691,8 @@ impl StreamContract {
         // Interaction: transfer tokens only after state is committed to storage
         let token_client = token::Client::new(env, &stream.token_address);
         token_client.transfer(&env.current_contract_address(), recipient, &amount);
+
+        Ok(())
     }
 
     /// Withdraw all currently claimable tokens from a stream.
@@ -672,6 +706,7 @@ impl StreamContract {
     /// - `Unauthorized`    — caller is not the stream's recipient.
     /// - `StreamInactive`  — stream is already inactive.
     /// - `InvalidAmount`   — no claimable balance (fully withdrawn already).
+    /// - `ArithmeticOverflow` — the new withdrawn total overflows `i128`.
     pub fn withdraw(env: Env, recipient: Address, stream_id: u64) -> Result<i128, StreamError> {
         recipient.require_auth();
 
@@ -696,7 +731,7 @@ impl StreamContract {
         }
 
         // Apply withdrawal: updates state, persists to storage, then transfers (CEI)
-        Self::apply_withdrawal(&env, &mut stream, stream_id, &recipient, claimable, now);
+        Self::apply_withdrawal(&env, &mut stream, stream_id, &recipient, claimable, now)?;
 
         let completed = stream.status == StreamStatus::Completed;
 
@@ -853,6 +888,7 @@ impl StreamContract {
     /// - `StreamNotFound`  — no stream exists with `stream_id`.
     /// - `Unauthorized`    — caller is not the stream's sender.
     /// - `StreamNotPaused` — stream is active but not currently paused.
+    /// - `ArithmeticOverflow` — the projected end time overflows `u64`.
     pub fn resume_stream(env: Env, sender: Address, stream_id: u64) -> Result<u64, StreamError> {
         sender.require_auth();
 
@@ -881,7 +917,7 @@ impl StreamContract {
             .saturating_sub(stream.withdrawn_amount)
             .saturating_sub(claimable_at_resume);
         // rate_per_second is guaranteed >= 1 due to create_stream's InvalidRate guard
-        let new_end_time = now + (remaining / stream.rate_per_second) as u64;
+        let new_end_time = Self::project_end_time(now, remaining, stream.rate_per_second)?;
 
         stream.paused = false;
         stream.paused_at = None;
@@ -938,10 +974,20 @@ impl StreamContract {
     /// If no protocol config exists or the fee rate is 0, returns `amount` unchanged.
     /// If fee calculation truncates to 0, no transfer/event occurs and `amount` is unchanged.
     /// Time complexity: O(1).
-    fn collect_fee(env: &Env, token_address: &Address, amount: i128, stream_id: u64) -> i128 {
+    fn collect_fee(
+        env: &Env,
+        token_address: &Address,
+        amount: i128,
+        stream_id: u64,
+    ) -> Result<i128, StreamError> {
         match try_load_config(env) {
             Some(cfg) if cfg.fee_rate_bps > 0 => {
-                let fee = amount * (cfg.fee_rate_bps as i128) / 10_000;
+                // `amount` is caller-supplied and can reach i128::MAX, so the
+                // bps multiplication is the first thing that would overflow.
+                let fee = amount
+                    .checked_mul(cfg.fee_rate_bps as i128)
+                    .ok_or(StreamError::ArithmeticOverflow)?
+                    / 10_000;
                 if fee > 0 {
                     let token_client = token::Client::new(env, token_address);
                     token_client.transfer(&env.current_contract_address(), &cfg.treasury, &fee);
@@ -955,9 +1001,11 @@ impl StreamContract {
                         },
                     );
                 }
-                amount - fee
+                // `fee_rate_bps` is capped at MAX_FEE_RATE_BPS (10%), so `fee`
+                // is always well below `amount` and this cannot underflow.
+                Ok(amount - fee)
             }
-            _ => amount,
+            _ => Ok(amount),
         }
     }
 }

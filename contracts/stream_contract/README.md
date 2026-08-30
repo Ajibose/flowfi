@@ -103,6 +103,10 @@ Error codes from `src/errors.rs`:
 | 9 | `InvalidDuration` | Duration is zero |
 | 10 | `InvalidTokenAddress` | Token address is not a token contract |
 | 11 | `InvalidRate` | `amount / duration` rounds to zero |
+| 12 | `StreamPaused` | Operation requires a stream that is not paused |
+| 13 | `StreamNotPaused` | `resume_stream` called on a stream that is not paused |
+| 14 | `StreamAlreadyPaused` | `pause_stream` called on an already-paused stream |
+| 15 | `ArithmeticOverflow` | An amount or timestamp calculation left its type's range |
 
 ## Test Snapshots
 
