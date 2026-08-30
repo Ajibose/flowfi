@@ -13,7 +13,7 @@ import "../lib/stream-id.js";
 
 /** Decode an ScVal symbol to a string. */
 export function decodeSymbol(val: xdr.ScVal): string {
-  return val.sym().toString();
+  return (val as xdr.ScValSymbol).sym.toString();
 }
 
 /**
@@ -21,12 +21,12 @@ export function decodeSymbol(val: xdr.ScVal): string {
  * `xdr.UInt64` extends Long; `.toString()` gives the decimal representation.
  */
 export function decodeU64(val: xdr.ScVal): bigint {
-  return BigInt(val.u64().toString());
+  return BigInt((val as xdr.ScValU64).u64.toString());
 }
 
 /** Decode an ScVal U32 to a JavaScript number. */
 export function decodeU32(val: xdr.ScVal): number {
-  return val.u32();
+  return (val as xdr.ScValU32).u32;
 }
 
 /**
@@ -35,9 +35,9 @@ export function decodeU32(val: xdr.ScVal): number {
  * Full value = hi * 2^64 + lo.
  */
 export function decodeI128(val: xdr.ScVal): string {
-  const parts = val.i128();
-  const hi = BigInt.asIntN(64, BigInt(parts.hi().toString()));
-  const lo = BigInt.asUintN(64, BigInt(parts.lo().toString()));
+  const parts = (val as xdr.ScValI128).i128;
+  const hi = BigInt.asIntN(64, BigInt(parts.hi.toString()));
+  const lo = BigInt.asUintN(64, BigInt(parts.lo.toString()));
   return ((hi << 64n) | lo).toString();
 }
 
@@ -46,13 +46,13 @@ export function decodeI128(val: xdr.ScVal): string {
  * string.
  */
 export function decodeAddress(val: xdr.ScVal): string {
-  const addr = val.address();
-  if (addr.switch().value === xdr.ScAddressType.scAddressTypeAccount().value) {
-    return StrKey.encodeEd25519PublicKey(addr.accountId().ed25519());
+  const addr = (val as xdr.ScValAddress).address;
+  if (addr.type === 'scAddressTypeAccount') {
+    return StrKey.encodeEd25519PublicKey((addr.accountId as xdr.PublicKeyEd25519).ed25519.value);
   }
-  // addr.contractId() returns a Hash (Opaque[]); cast to Uint8Array for encodeContract
-  const hash = addr.contractId();
-  return StrKey.encodeContract(Buffer.from(hash as unknown as Uint8Array));
+  // addr.contractId is a Hash (Opaque[]); cast to Uint8Array for encodeContract
+  const hash = (addr as xdr.ScAddressContract).contractId;
+  return StrKey.encodeContract(Buffer.from(hash.value as unknown as Uint8Array));
 }
 
 /**
@@ -61,10 +61,10 @@ export function decodeAddress(val: xdr.ScVal): string {
  */
 export function decodeMap(val: xdr.ScVal): Record<string, xdr.ScVal> {
   const result: Record<string, xdr.ScVal> = {};
-  const entries = val.map();
+  const entries = (val as xdr.ScValMap).map;
   if (!entries) return result;
   for (const entry of entries) {
-    result[entry.key().sym().toString()] = entry.val();
+    result[(entry.key as xdr.ScValSymbol).sym.toString()] = entry.val;
   }
   return result;
 }
