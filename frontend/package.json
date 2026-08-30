@@ -12,7 +12,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "codegen:api-types": "openapi-typescript http://localhost:3001/api-docs.json -o src/lib/api-types.generated.ts"
+    "codegen:api-types": "openapi-typescript ../backend/swagger/flowfi.openapi.json -o src/lib/api-types.generated.ts"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
