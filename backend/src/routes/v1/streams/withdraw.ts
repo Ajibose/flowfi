@@ -110,35 +110,39 @@ export const withdrawHandler = async (req: AuthenticatedRequest, res: Response) 
       const now = BigInt(Math.floor(Date.now() / 1000));
       const withdrawAmount = BigInt(claimable.claimableAmount);
 
-      // Use a $transaction with atomic increment to prevent concurrent
-      // withdraw requests from losing updates (Issue #1217 — read-compute-write race).
+      // Use raw SQL atomic increment to prevent concurrent withdraw requests
+      // from losing updates (Issue #1217 — read-compute-write race).
+      // Prisma's built-in { increment } is unavailable on String-typed columns,
+      // so we use $transaction with $executeRawUnsafe for atomic SQL updates.
       const updatedStream = await prisma.$transaction(async (tx) => {
-        // Atomically increment withdrawnAmount so concurrent requests compound
-        // rather than overwrite each other.
-        const updated = await tx.stream.update({
+        // Atomically increment withdrawnAmount in a single SQL statement so
+        // concurrent requests compound rather than overwrite each other.
+        await tx.$executeRawUnsafe(
+          `UPDATE "Stream" SET "withdrawnAmount" = ("withdrawnAmount"::bigint + $1::bigint)::text, "lastUpdateTime" = $2 WHERE "streamId" = $3`,
+          withdrawAmount.toString(),
+          now,
+          parsedStreamId,
+        );
+
+        // Re-read the stream to get post-increment values.
+        const refreshed = await tx.stream.findUnique({
           where: { streamId: parsedStreamId },
-          data: {
-            withdrawnAmount: { increment: withdrawAmount.toString() },
-            lastUpdateTime: now,
-          },
         });
 
-        // Conditionally deactivate if fully withdrawn.  The comparison is done
-        // in JavaScript using the values we just wrote, which is safe inside the
-        // serializable transaction — no other writer can change them until we
-        // commit.
+        // Conditionally deactivate if fully withdrawn.
         if (
           stream.isActive &&
-          BigInt(updated.withdrawnAmount) >= BigInt(updated.depositedAmount)
+          refreshed &&
+          BigInt(refreshed.withdrawnAmount) >= BigInt(refreshed.depositedAmount)
         ) {
           await tx.stream.update({
             where: { streamId: parsedStreamId },
             data: { isActive: false },
           });
-          updated.isActive = false;
+          refreshed.isActive = false;
         }
 
-        return updated;
+        return refreshed;
       });
 
       // Create or update a WITHDRAWN event
