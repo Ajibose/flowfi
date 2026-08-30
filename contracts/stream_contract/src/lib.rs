@@ -23,6 +23,8 @@ mod types;
 mod acceptance_tests;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod property_tests;
 
 use soroban_sdk::{contract, contractimpl, token, vec, Address, Env, InvokeError, Symbol, Vec};
 

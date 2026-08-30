@@ -6,7 +6,7 @@ import {
   getIndexerStatus,
   resetIndexer,
   replayFromLedger,
-} from '../../services/indexerService.js';
+} from '../../services/indexer.service.js';
 
 import { prisma, pool } from '../../lib/prisma.js';
 import { getPoolMetrics } from '../../lib/pg-pool.js';
