@@ -10,7 +10,7 @@ import { formatNetwork } from "@/lib/wallet";
 import toast from "react-hot-toast";
 import { getApiBaseUrl } from "@/lib/api/_shared";
 
-type DisplayCurrency = "USD" | "XLM" | "USDC";
+type DisplayCurrency = "USD" | "EUR" | "GBP" | "XLM" | "USDC";
 type AmountFormat = "full" | "compact";
 type DecimalPlaces = 2 | 4 | 7;
 
@@ -253,7 +253,9 @@ export default function SettingsContent() {
                   }}
                   className="mt-1 block w-full px-3 py-2 rounded-lg bg-black/40 dark:bg-white/40 border border-white/10 dark:border-black/10 text-white dark:text-black text-sm"
                 >
-                  <option value="USD">USD</option>
+                  <option value="USD">USD ($)</option>
+                  <option value="EUR">EUR (€)</option>
+                  <option value="GBP">GBP (£)</option>
                   <option value="XLM">XLM</option>
                   <option value="USDC">USDC</option>
                 </select>
