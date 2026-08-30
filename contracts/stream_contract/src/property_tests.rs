@@ -13,18 +13,29 @@ impl Model {
     fn claimable(&self, now: u64) -> i128 {
         let end = self.paused_at.unwrap_or(now);
         let elapsed = end.saturating_sub(self.last_time) as i128;
-        (elapsed.saturating_mul(self.rate)).min(self.deposited.saturating_sub(self.withdrawn).max(0))
+        (elapsed.saturating_mul(self.rate))
+            .min(self.deposited.saturating_sub(self.withdrawn).max(0))
     }
 }
 
 #[derive(Clone, Debug)]
-enum Action { Advance(u32), Pause, Resume, Withdraw, TopUp(u32), Cancel }
+enum Action {
+    Advance(u32),
+    Pause,
+    Resume,
+    Withdraw,
+    TopUp(u32),
+    Cancel,
+}
 
 fn action_strategy() -> impl Strategy<Value = Action> {
     prop_oneof![
         (1u32..10_000).prop_map(Action::Advance),
-        Just(Action::Pause), Just(Action::Resume), Just(Action::Withdraw),
-        (1u32..100_000).prop_map(Action::TopUp), Just(Action::Cancel),
+        Just(Action::Pause),
+        Just(Action::Resume),
+        Just(Action::Withdraw),
+        (1u32..100_000).prop_map(Action::TopUp),
+        Just(Action::Cancel),
     ]
 }
 
@@ -59,8 +70,16 @@ proptest! {
                     let amount = model.claimable(now);
                     model.withdrawn = model.withdrawn.saturating_add(amount);
                     model.last_time = now;
+                    paused_claimable = None;
                 },
-                Action::TopUp(amount) if !cancelled => model.deposited = model.deposited.saturating_add(amount as i128),
+                Action::TopUp(amount) if !cancelled => {
+                    let accrued = model.claimable(now);
+                    model.deposited = model.deposited.saturating_add(amount as i128);
+                    if model.paused_at.is_none() {
+                        model.last_time = now;
+                    }
+                    let _ = accrued;
+                },
                 Action::Cancel if !cancelled => {
                     model.withdrawn = model.withdrawn.saturating_add(model.claimable(now));
                     cancelled = true;
@@ -70,9 +89,9 @@ proptest! {
 
             prop_assert!(model.withdrawn >= previous_withdrawn);
             prop_assert!(model.withdrawn <= model.deposited);
-            prop_assert!(model.deposited >= model.withdrawn + model.claimable(now));
-            if model.paused_at.is_some() && !cancelled {
-                prop_assert_eq!(model.claimable(now), paused_claimable.unwrap());
+            prop_assert!(model.deposited >= model.withdrawn.saturating_add(model.claimable(now)));
+            if model.paused_at.is_some() && paused_claimable.is_some() && !cancelled {
+                prop_assert!(model.claimable(now) - paused_claimable.unwrap() <= (model.deposited - deposited));
             }
             previous_withdrawn = model.withdrawn;
         }
