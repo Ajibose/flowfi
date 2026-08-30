@@ -730,11 +730,12 @@ export const topUpStreamHandler = async (req: Request, res: Response) => {
 
     const txHash = await topUpStream(streamId, amount, callerAddress);
 
-    const newDeposited = (BigInt(stream.depositedAmount) + amount).toString();
-    await prisma.stream.update({
+    // Use atomic increment to prevent concurrent top-ups from overwriting
+    // each other's updates (Issue #1217 — read-compute-write race).
+    const updatedStream = await prisma.stream.update({
       where: { streamId },
       data: {
-        depositedAmount: newDeposited,
+        depositedAmount: { increment: amount.toString() },
         lastUpdateTime: BigInt(Math.floor(Date.now() / 1000)),
       },
     });
@@ -742,7 +743,7 @@ export const topUpStreamHandler = async (req: Request, res: Response) => {
     logger.info(`[topUp] stream=${streamId} amount=${amount} txHash=${txHash}`);
     return res
       .status(200)
-      .json({ streamId, txHash, depositedAmount: newDeposited });
+      .json({ streamId, txHash, depositedAmount: updatedStream.depositedAmount });
   } catch (error: any) {
     logger.error(`[topUp] stream=${streamId} error:`, error);
     return res.status(400).json({ error: 'Failed to top up stream on chain', message: error.message ?? 'Unknown error' });

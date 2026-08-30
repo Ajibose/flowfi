@@ -108,19 +108,37 @@ export const withdrawHandler = async (req: AuthenticatedRequest, res: Response) 
       const result = await sorobanWithdraw(parsedStreamId, req.user.publicKey);
       
       const now = BigInt(Math.floor(Date.now() / 1000));
-      const nextWithdrawnAmount = (
-        BigInt(stream.withdrawnAmount) + BigInt(claimable.claimableAmount)
-      ).toString();
-      
-      const isCompleted = BigInt(nextWithdrawnAmount) >= BigInt(stream.depositedAmount);
+      const withdrawAmount = BigInt(claimable.claimableAmount);
 
-      const updatedStream = await prisma.stream.update({
-        where: { streamId: parsedStreamId },
-        data: {
-          withdrawnAmount: nextWithdrawnAmount,
-          lastUpdateTime: now,
-          isActive: isCompleted ? false : stream.isActive,
-        },
+      // Use a $transaction with atomic increment to prevent concurrent
+      // withdraw requests from losing updates (Issue #1217 — read-compute-write race).
+      const updatedStream = await prisma.$transaction(async (tx) => {
+        // Atomically increment withdrawnAmount so concurrent requests compound
+        // rather than overwrite each other.
+        const updated = await tx.stream.update({
+          where: { streamId: parsedStreamId },
+          data: {
+            withdrawnAmount: { increment: withdrawAmount.toString() },
+            lastUpdateTime: now,
+          },
+        });
+
+        // Conditionally deactivate if fully withdrawn.  The comparison is done
+        // in JavaScript using the values we just wrote, which is safe inside the
+        // serializable transaction — no other writer can change them until we
+        // commit.
+        if (
+          stream.isActive &&
+          BigInt(updated.withdrawnAmount) >= BigInt(updated.depositedAmount)
+        ) {
+          await tx.stream.update({
+            where: { streamId: parsedStreamId },
+            data: { isActive: false },
+          });
+          updated.isActive = false;
+        }
+
+        return updated;
       });
 
       // Create or update a WITHDRAWN event
