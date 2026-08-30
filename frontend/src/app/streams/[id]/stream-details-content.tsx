@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/Button";
 import toast from "react-hot-toast";
 import { useWallet } from "@/context/wallet-context";
 import { useStreamEvents } from "@/hooks/useStreamEvents";
+import TransactionTracker, {
+  useTransactionTracker,
+} from "@/components/TransactionTracker";
 import {
   withdrawFromStream,
   cancelStream,
@@ -69,6 +72,7 @@ const EVENT_STYLES: Record<string, { color: string; icon: string; label: string 
 
 export default function StreamDetailsContent({ streamId }: { streamId: string }) {
   const { session, isHydrated } = useWallet();
+  const tracker = useTransactionTracker();
 
   const [stream, setStream] = useState<StreamDetail | null>(null);
   const [events, setEvents] = useState<BackendStreamEvent[]>([]);
@@ -77,10 +81,6 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [pausing, setPausing] = useState(false);
-  const [resuming, setResuming] = useState(false);
   const [topUpAmount, setTopUpAmount] = useState("");
   const [showTopUp, setShowTopUp] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -201,15 +201,18 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       toast.error("Please connect your wallet");
       return;
     }
-    setWithdrawing(true);
+    tracker.start();
     try {
-      await withdrawFromStream(session, { streamId: BigInt(streamId) });
+      const result = await withdrawFromStream(session, { streamId: BigInt(streamId) });
+      tracker.submit(result.txHash);
+      tracker.confirm();
       toast.success("Withdrawal successful!");
       await fetchStream();
+      tracker.succeed();
     } catch (err) {
-      toast.error(toSorobanErrorMessage(err));
-    } finally {
-      setWithdrawing(false);
+      const message = toSorobanErrorMessage(err);
+      tracker.fail(message);
+      toast.error(message);
     }
   };
 
@@ -222,15 +225,21 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       toast.error("Please enter a valid amount");
       return;
     }
+    tracker.start();
     try {
       const amount = toBaseUnits(topUpAmount);
-      await topUpStream(session, { streamId: BigInt(streamId), amount });
+      const result = await topUpStream(session, { streamId: BigInt(streamId), amount });
+      tracker.submit(result.txHash);
+      tracker.confirm();
       toast.success("Stream topped up successfully!");
       setShowTopUp(false);
       setTopUpAmount("");
       await fetchStream();
+      tracker.succeed();
     } catch (err) {
-      toast.error(toSorobanErrorMessage(err));
+      const message = toSorobanErrorMessage(err);
+      tracker.fail(message);
+      toast.error(message);
     }
   };
 
@@ -239,15 +248,18 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       toast.error("Please connect your wallet");
       return;
     }
-    setPausing(true);
+    tracker.start();
     try {
-      await pauseStream(session, { streamId: BigInt(streamId) });
+      const result = await pauseStream(session, { streamId: BigInt(streamId) });
+      tracker.submit(result.txHash);
+      tracker.confirm();
       toast.success("Stream paused");
       await fetchStream();
+      tracker.succeed();
     } catch (err) {
-      toast.error(toSorobanErrorMessage(err));
-    } finally {
-      setPausing(false);
+      const message = toSorobanErrorMessage(err);
+      tracker.fail(message);
+      toast.error(message);
     }
   };
 
@@ -256,15 +268,18 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       toast.error("Please connect your wallet");
       return;
     }
-    setResuming(true);
+    tracker.start();
     try {
-      await resumeStream(session, { streamId: BigInt(streamId) });
+      const result = await resumeStream(session, { streamId: BigInt(streamId) });
+      tracker.submit(result.txHash);
+      tracker.confirm();
       toast.success("Stream resumed");
       await fetchStream();
+      tracker.succeed();
     } catch (err) {
-      toast.error(toSorobanErrorMessage(err));
-    } finally {
-      setResuming(false);
+      const message = toSorobanErrorMessage(err);
+      tracker.fail(message);
+      toast.error(message);
     }
   };
 
@@ -273,16 +288,19 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       toast.error("Please connect your wallet");
       return;
     }
-    setCancelling(true);
+    tracker.start();
     try {
-      await cancelStream(session, { streamId: BigInt(streamId) });
+      const result = await cancelStream(session, { streamId: BigInt(streamId) });
+      tracker.submit(result.txHash);
+      tracker.confirm();
       toast.success("Stream cancelled");
       setShowCancelModal(false);
       await fetchStream();
+      tracker.succeed();
     } catch (err) {
-      toast.error(toSorobanErrorMessage(err));
-    } finally {
-      setCancelling(false);
+      const message = toSorobanErrorMessage(err);
+      tracker.fail(message);
+      toast.error(message);
     }
   };
 
@@ -475,12 +493,12 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
               {isRecipient && (
                 <Button
                   onClick={handleWithdraw}
-                  disabled={withdrawing || liveClaimable <= 0n}
+                  disabled={tracker.status !== "idle" || liveClaimable <= 0n}
                   glow
                   className="flex items-center gap-2"
                 >
                   <Download className="h-4 w-4" />
-                  {withdrawing ? "Withdrawing..." : "Withdraw"}
+                  {tracker.status === "signing" ? "Signing..." : tracker.status === "submitted" || tracker.status === "confirming" ? "Processing..." : "Withdraw"}
                 </Button>
               )}
 
@@ -500,22 +518,22 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
                   {!stream.isPaused ? (
                     <Button
                       onClick={handlePause}
-                      disabled={pausing}
+                      disabled={tracker.status !== "idle"}
                       variant="outline"
                       className="flex items-center gap-2"
                     >
                       <Pause className="h-4 w-4" />
-                      {pausing ? "Pausing..." : "Pause"}
+                      {tracker.status !== "idle" ? "Processing..." : "Pause"}
                     </Button>
                   ) : (
                     <Button
                       onClick={handleResume}
-                      disabled={resuming}
+                      disabled={tracker.status !== "idle"}
                       variant="outline"
                       className="flex items-center gap-2"
                     >
                       <Play className="h-4 w-4" />
-                      {resuming ? "Resuming..." : "Resume"}
+                      {tracker.status !== "idle" ? "Processing..." : "Resume"}
                     </Button>
                   )}
                 </>
@@ -524,7 +542,7 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
               {isSender && (
                 <Button
                   onClick={() => setShowCancelModal(true)}
-                  disabled={cancelling}
+                  disabled={tracker.status !== "idle"}
                   variant="outline"
                   className="flex items-center gap-2 border-red-500/50 text-red-400 hover:bg-red-500/10"
                 >
@@ -547,6 +565,19 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
                 <Button onClick={handleTopUp}>Add Funds</Button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Transaction Tracker */}
+        {tracker.status !== "idle" && (
+          <div className="glass-card p-6">
+            <TransactionTracker
+              status={tracker.status}
+              action="withdraw"
+              txHash={tracker.txHash}
+              error={tracker.error}
+              streamId={streamId}
+            />
           </div>
         )}
 
