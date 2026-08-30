@@ -7,11 +7,16 @@
  *
  * - Freighter: shows "Install Freighter" link when extension is absent.
  * - Dismiss via Escape key or backdrop click.
+ *
+ * Focus trapping, focus restoration, Escape handling and body-scroll locking
+ * all come from the shared `useModalDialog` hook, so this dialog behaves the
+ * same way as every other modal in the app.
  */
 
-import React, { useEffect, useCallback } from "react";
+import React, { useEffect } from "react";
 import { type WalletId } from "@/lib/wallet";
 import { useWallet } from "@/context/wallet-context";
+import { useModalDialog } from "@/hooks/useModalDialog";
 
 import { isConnected } from "@stellar/freighter-api";
 
@@ -31,6 +36,11 @@ export function WalletModal({ onClose }: WalletModalProps) {
 
   const isConnecting = status === "connecting";
   const [freighterInstalled, setFreighterInstalled] = React.useState(true);
+
+  // Escape-to-close, focus trapping, focus restoration and body-scroll
+  // locking. Closing stays disabled while a connection is in flight, matching
+  // the disabled close button and the guarded backdrop click below.
+  const dialogRef = useModalDialog({ onClose, isCloseDisabled: isConnecting });
 
   // The Freighter extension injects itself asynchronously.
   // We need to poll briefly after mount to reliably detect it.
@@ -53,29 +63,6 @@ export function WalletModal({ onClose }: WalletModalProps) {
     return () => clearInterval(interval);
   }, []);
 
-  // Close on Escape
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isConnecting) {
-        onClose();
-      }
-    },
-    [isConnecting, onClose],
-  );
-
-  useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
-
-  // Prevent body scroll while modal is open
-  useEffect(() => {
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, []);
-
   const handleConnect = async (walletId: WalletId) => {
     clearError();
     await connect(walletId);
@@ -95,7 +82,7 @@ export function WalletModal({ onClose }: WalletModalProps) {
       aria-labelledby="wallet-modal-title"
       onClick={handleBackdropClick}
     >
-      <div className="wallet-modal">
+      <div ref={dialogRef} className="wallet-modal">
         {/* Header */}
         <div className="wallet-modal__header">
           <div>
