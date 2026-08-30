@@ -752,21 +752,24 @@ export const topUpStreamHandler = async (req: Request, res: Response) => {
 
     const txHash = await topUpStream(streamId, amount, callerAddress);
 
-    const nowTs = BigInt(Math.floor(Date.now() / 1000));
-    const result = await prisma.$queryRaw<Array<{ depositedAmount: string }>>`
-      UPDATE "Stream"
-      SET "depositedAmount" = CAST(CAST("depositedAmount" AS numeric) + CAST(${amount.toString()} AS numeric) AS text),
-          "lastUpdateTime" = ${nowTs}
-      WHERE "streamId" = ${streamId}
-      RETURNING "depositedAmount"
-    `;
-
-    const newDeposited = result[0]?.depositedAmount ?? (BigInt(stream.depositedAmount) + amount).toString();
+    // Use raw SQL atomic increment to prevent concurrent top-ups from
+    // overwriting each other's updates (Issue #1217 — read-compute-write race).
+    // Prisma's built-in { increment } is unavailable on String-typed columns,
+    // so we perform SET deposited_amount = deposited_amount + $1::bigint
+    // directly in a single SQL statement.
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    await prisma.$executeRawUnsafe(
+      `UPDATE "Stream" SET "depositedAmount" = ("depositedAmount"::bigint + $1::bigint)::text, "lastUpdateTime" = $2 WHERE "streamId" = $3`,
+      amount.toString(),
+      now,
+      streamId,
+    );
+    const updatedStream = await prisma.stream.findUnique({ where: { streamId } });
 
     logger.info(`[topUp] stream=${streamId} amount=${amount} txHash=${txHash}`);
     return res
       .status(200)
-      .json({ streamId, txHash, depositedAmount: newDeposited });
+      .json({ streamId, txHash, depositedAmount: updatedStream!.depositedAmount });
   } catch (error: any) {
     logger.error(`[topUp] stream=${streamId} error:`, error);
     return res.status(400).json({ error: 'Failed to top up stream on chain', message: error.message ?? 'Unknown error' });

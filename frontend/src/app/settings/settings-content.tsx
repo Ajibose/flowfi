@@ -9,6 +9,7 @@ import Link from "next/link";
 import { formatNetwork } from "@/lib/wallet";
 import toast from "react-hot-toast";
 import { getApiBaseUrl } from "@/lib/api/_shared";
+import { DisconnectConfirmModal } from "@/components/wallet/DisconnectConfirmModal";
 
 type DisplayCurrency = "USD" | "EUR" | "GBP" | "XLM" | "USDC";
 type AmountFormat = "full" | "compact";
@@ -63,6 +64,7 @@ export default function SettingsContent() {
   const [lastLedger, setLastLedger] = useState<string>("Loading...");
 
   const [copied, setCopied] = useState(false);
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
 
   const toggleTheme = (newTheme: "light" | "dark" | "system") => {
     setTheme(newTheme);
@@ -423,13 +425,26 @@ export default function SettingsContent() {
 
           {/* Disconnect */}
           {session && (
-            <button
-              onClick={handleDisconnect}
-              className="w-full flex items-center justify-center gap-2 bg-red-600/90 hover:bg-red-600 transition px-4 py-3 rounded-xl text-white font-medium shadow-lg hover:shadow-red-500/30"
-            >
-              <LogOut size={18} />
-              Disconnect Wallet
-            </button>
+            <>
+              <button
+                onClick={() => setShowDisconnectConfirm(true)}
+                className="w-full flex items-center justify-center gap-2 bg-red-600/90 hover:bg-red-600 transition px-4 py-3 rounded-xl text-white font-medium shadow-lg hover:shadow-red-500/30"
+              >
+                <LogOut size={18} />
+                Disconnect Wallet
+              </button>
+
+              {showDisconnectConfirm && (
+                <DisconnectConfirmModal
+                  onClose={() => setShowDisconnectConfirm(false)}
+                  onConfirm={() => {
+                    setShowDisconnectConfirm(false);
+                    handleDisconnect();
+                  }}
+                  walletAddress={session.publicKey}
+                />
+              )}
+            </>
           )}
 
         </div>
