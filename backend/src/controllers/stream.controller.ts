@@ -752,14 +752,16 @@ export const topUpStreamHandler = async (req: Request, res: Response) => {
 
     const txHash = await topUpStream(streamId, amount, callerAddress);
 
-    const newDeposited = (BigInt(stream.depositedAmount) + amount).toString();
-    await prisma.stream.update({
-      where: { streamId },
-      data: {
-        depositedAmount: newDeposited,
-        lastUpdateTime: BigInt(Math.floor(Date.now() / 1000)),
-      },
-    });
+    const nowTs = BigInt(Math.floor(Date.now() / 1000));
+    const result = await prisma.$queryRaw<Array<{ depositedAmount: string }>>`
+      UPDATE "Stream"
+      SET "depositedAmount" = CAST(CAST("depositedAmount" AS numeric) + CAST(${amount.toString()} AS numeric) AS text),
+          "lastUpdateTime" = ${nowTs}
+      WHERE "streamId" = ${streamId}
+      RETURNING "depositedAmount"
+    `;
+
+    const newDeposited = result[0]?.depositedAmount ?? (BigInt(stream.depositedAmount) + amount).toString();
 
     logger.info(`[topUp] stream=${streamId} amount=${amount} txHash=${txHash}`);
     return res
