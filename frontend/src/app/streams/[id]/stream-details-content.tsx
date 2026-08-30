@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { getApiBaseUrl } from "@/lib/api/_shared";
 import { logger } from "@/lib/logger";
@@ -92,21 +92,29 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
     autoReconnect: true,
   });
 
+  const streamReqId = useRef(0);
   const fetchStream = useCallback(async (signal?: AbortSignal) => {
     if (!streamId) return;
+    const reqId = ++streamReqId.current;
     try {
       const response = await fetch(`${API_BASE_URL}/streams/${streamId}`, { signal });
       if (!response.ok) throw new Error("Stream not found");
       const data = await response.json();
-      setStream(data);
+      if (reqId === streamReqId.current) {
+        setStream(data);
+      }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
-      setError(err instanceof Error ? err.message : "Failed to fetch stream");
+      if (reqId === streamReqId.current) {
+        setError(err instanceof Error ? err.message : "Failed to fetch stream");
+      }
     }
   }, [streamId]);
 
+  const eventsReqId = useRef(0);
   const fetchEvents = useCallback(async (page: number, signal?: AbortSignal) => {
     if (!streamId) return;
+    const reqId = ++eventsReqId.current;
     try {
       const response = await fetch(
         `${API_BASE_URL}/streams/${streamId}/events?page=${page}&limit=${EVENTS_PER_PAGE}`,
@@ -114,8 +122,10 @@ export default function StreamDetailsContent({ streamId }: { streamId: string })
       );
       if (response.ok) {
         const data = await response.json();
-        setEvents(data.events || []);
-        setEventsTotal(data.total || 0);
+        if (reqId === eventsReqId.current) {
+          setEvents(data.events || []);
+          setEventsTotal(data.total || 0);
+        }
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
