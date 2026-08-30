@@ -17,6 +17,8 @@ const {
       create: vi.fn(),
       upsert: vi.fn(),
     },
+    $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    $transaction: vi.fn(async (fn: any) => fn(mockPrisma)),
   },
   currentUser: { publicKey: '' },
 }));
