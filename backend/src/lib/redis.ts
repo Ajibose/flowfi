@@ -24,10 +24,39 @@ interface CacheItem<T> {
   createdAt: number;
 }
 
-class MemoryCache {
+interface MemoryCacheOptions {
+  /**
+   * Hard cap on the number of entries kept in memory. When exceeded, the
+   * least-recently-used entries are evicted immediately (Issue #1249), so the
+   * cache is bounded even between timed cleanup() sweeps.
+   */
+  maxItems?: number;
+}
+
+const DEFAULT_MEMORY_CACHE_MAX_ITEMS = 10_000;
+
+/**
+ * LRU-bounded in-memory cache. Entries are ordered by recency (most-recently
+ * used at the end of the Map), and a max-size cap is enforced on every set so
+ * memory usage stays bounded regardless of key churn or sweep interval.
+ */
+export class MemoryCache {
   private cache = new Map<string, CacheItem<any>>();
   private hits = 0;
   private misses = 0;
+  private readonly maxItems: number;
+
+  constructor(options: MemoryCacheOptions = {}) {
+    const configuredMax = Number.parseInt(
+      process.env.MEMORY_CACHE_MAX_ITEMS ?? '',
+      10,
+    );
+    const envMax =
+      Number.isFinite(configuredMax) && configuredMax > 0
+        ? configuredMax
+        : DEFAULT_MEMORY_CACHE_MAX_ITEMS;
+    this.maxItems = options.maxItems ?? envMax;
+  }
 
   get<T>(key: string): T | null {
     const item = this.cache.get(key);
@@ -41,16 +70,23 @@ class MemoryCache {
       return null;
     }
     this.hits++;
+    // Refresh LRU recency: re-insert at the end of the Map so this entry is
+    // the last candidate for eviction when the max-size cap is hit.
+    this.cache.delete(key);
+    this.cache.set(key, item);
     return item.value;
   }
 
   set<T>(key: string, value: T, ttlSeconds: number): void {
     const now = Date.now();
+    // Delete-then-set so overwrites also move to the most-recently-used end.
+    this.cache.delete(key);
     this.cache.set(key, {
       value,
       createdAt: now,
       expiresAt: now + ttlSeconds * 1000,
     });
+    this.evictIfOverCapacity();
   }
 
   del(key: string): void {
@@ -64,6 +100,9 @@ class MemoryCache {
       this.cache.delete(key);
       return null;
     }
+    // Same recency refresh as get(): active metadata reads keep entries alive.
+    this.cache.delete(key);
+    this.cache.set(key, item);
     return {
       createdAt: new Date(item.createdAt).toISOString(),
       expiresAt: new Date(item.expiresAt).toISOString(),
@@ -77,6 +116,7 @@ class MemoryCache {
       misses: this.misses,
       hitRate: totalRequests > 0 ? (this.hits / totalRequests) * 100 : 0,
       itemCount: this.cache.size,
+      maxItems: this.maxItems,
     };
   }
 
@@ -86,6 +126,16 @@ class MemoryCache {
       if (now >= item.expiresAt) {
         this.cache.delete(key);
       }
+    }
+    this.evictIfOverCapacity();
+  }
+
+  private evictIfOverCapacity(): void {
+    // Evict from the front of the Map (least-recently-used) until under cap.
+    while (this.cache.size > this.maxItems) {
+      const oldestKey = this.cache.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.cache.delete(oldestKey);
     }
   }
 }
@@ -97,6 +147,8 @@ let sweepInterval: ReturnType<typeof setInterval> | undefined;
 /**
  * Starts the memory cache cleanup sweep interval.
  * Uses process.env.MEMORY_CACHE_SWEEP_MS (default 60,000ms) unless overridden.
+ * The sweep only prunes expired entries; the LRU max-size cap (MEMORY_CACHE_MAX_ITEMS)
+ * is enforced independently on every set (Issue #1249).
  */
 export function startMemoryCacheSweep(intervalMs?: number): void {
   if (sweepInterval) {
