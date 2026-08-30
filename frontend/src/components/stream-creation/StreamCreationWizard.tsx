@@ -119,7 +119,10 @@ export const StreamCreationWizard: React.FC<StreamCreationWizardProps> = ({
   
   const router = useRouter();
 
-  const dialogRef = useModalDialog({ onClose });
+  const dialogRef = useModalDialog({ 
+    onClose,
+    isCloseDisabled: isSubmitting || isPolling
+  });
 
   const [walletBalance, setWalletBalance] = useState<string | null>(null);
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
@@ -627,7 +630,7 @@ export const StreamCreationWizard: React.FC<StreamCreationWizardProps> = ({
               )}
             </div>
             <div className="flex gap-4">
-              <Button variant="outline" onClick={onClose}>
+              <Button variant="outline" onClick={onClose} disabled={isSubmitting || isPolling}>
                 Cancel
               </Button>
               {currentStep < STEPS.length ? (
