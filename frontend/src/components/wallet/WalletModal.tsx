@@ -3,11 +3,7 @@
 /**
  * components/wallet/WalletModal.tsx
  *
- * Wallet selection modal. Shows the production-ready Freighter connector and
- * handles all connecting states and error display.
- *
- * Albedo and xBull are intentionally hidden until real connectors are
- * implemented; the production picker must never create mock sessions.
+ * Wallet selection modal with connector availability and connection states.
  *
  * - Freighter: shows "Install Freighter" link when extension is absent.
  * - Dismiss via Escape key or backdrop click.
