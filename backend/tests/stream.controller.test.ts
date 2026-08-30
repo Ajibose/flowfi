@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createStream, listStreams, getStream, getStreamEvents, getStreamClaimableAmount, pauseStream, resumeStream } from '../src/controllers/stream.controller.js';
+import { createStream, listStreams, getStream, getStreamEvents, getStreamClaimableAmount, getUserStreamSummary, pauseStream, resumeStream, MAX_USER_STREAMS } from '../src/controllers/stream.controller.js';
 import { prisma } from '../src/lib/prisma.js';
 import { claimableAmountService } from '../src/services/claimable.service.js';
 import * as sorobanService from '../src/services/sorobanService.js';
