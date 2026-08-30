@@ -57,8 +57,8 @@ import logger from '../src/logger.js';
 
 // ─── ScVal v17 mock helpers (property-based, not method-based) ──────────────
 const mockSym = (name: string) => ({ sym: { toString: () => name } } as any);
-const mockU64 = (value: number | bigint) => ({ u64: { toString: () => String(value) } } as any);
-const mockI128 = (hi: number | bigint, lo: number | bigint) => ({ i128: { hi: { toString: () => String(hi) }, lo: { toString: () => String(lo) } } } as any);
+const mockU64 = (value: number | bigint | string) => ({ u64: { toString: () => String(value) } } as any);
+const mockI128 = (hi: number | bigint | string, lo: number | bigint | string) => ({ i128: { hi: { toString: () => String(hi) }, lo: { toString: () => String(lo) } } } as any);
 const mockAccountAddr = () => ({ address: { type: 'scAddressTypeAccount', accountId: { ed25519: { value: Buffer.alloc(32) } } } } as any);
 const mockContractAddr = () => ({ address: { type: 'scAddressTypeContract', contractId: { value: Buffer.alloc(32) } } } as any);
 const mockMapEntry = (keyName: string, val: any) => ({ key: mockSym(keyName), val } as any);
