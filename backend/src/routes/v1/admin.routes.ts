@@ -169,6 +169,22 @@ function withLiveIndexerCounters<
   };
 }
 
+/**
+ * Attach a `calculatedAt` timestamp reflecting when the underlying aggregation
+ * actually ran (i.e. when the metrics payload was stored in the cache), not
+ * when this HTTP response is serialized. On a cache HIT this stays stable
+ * across requests served from the same cache entry (Issue #1240).
+ */
+function withCalculatedAt<T extends object>(
+  payload: T,
+): T & { calculatedAt: string } {
+  const createdAt = cache.getMetadata(ADMIN_METRICS_CACHE_KEY)?.createdAt;
+  return {
+    ...payload,
+    calculatedAt: createdAt ?? new Date().toISOString(),
+  };
+}
+
 router.get('/metrics', async (_req: Request, res: Response) => {
   try {
     const cached = cache.get<Awaited<ReturnType<typeof buildAdminMetrics>>>(
@@ -176,14 +192,14 @@ router.get('/metrics', async (_req: Request, res: Response) => {
     );
     if (cached) {
       res.set('X-Cache', 'HIT');
-      res.json(withLiveIndexerCounters(cached));
+      res.json(withLiveIndexerCounters(withCalculatedAt(cached)));
       return;
     }
 
     const payload = await buildAdminMetrics();
     cache.set(ADMIN_METRICS_CACHE_KEY, payload, ADMIN_METRICS_CACHE_TTL_SECONDS);
     res.set('X-Cache', 'MISS');
-    res.json(payload);
+    res.json(withCalculatedAt(payload));
   } catch (err) {
     logger.error('Error fetching admin metrics:', err);
     res.status(500).json({ error: 'Internal server error' });
