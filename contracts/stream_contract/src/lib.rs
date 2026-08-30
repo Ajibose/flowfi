@@ -10,6 +10,15 @@
 //! | [`errors.rs`](./errors.rs) | Error types — `StreamError` enum with all contract error variants |
 //! | [`events.rs`](./events.rs) | Event payloads — typed structs emitted by each entrypoint |
 //! | [`test.rs`](./test.rs) | Unit & integration tests — module gated behind `#[cfg(test)]` |
+//!
+//! ## Stream State Invariant
+//!
+//! The `is_active` and `paused` fields are independently-settable with an implicit
+//! invariant: **a cancelled stream must never be resumable**. Once a stream's status
+//! is set to `Cancelled`, it cannot be resumed, even if `paused` is set to `true`.
+//! This invariant is critical for preventing state-invariant bugs and must be
+//! preserved across all contract changes. See Testing #94 for test coverage of this
+//! invariant.
 
 #![no_std]
 #![doc = include_str!("../README.md")]
@@ -722,6 +731,12 @@ impl StreamContract {
     /// accrued tokens up to the cancellation moment, and any remaining unspent
     /// balance is refunded to the sender.
     ///
+    /// **State Invariant:** Once a stream is cancelled, its `status` is set to
+    /// `Cancelled` and `is_active` is set to `false`. A cancelled stream can
+    /// never be resumed, even if `paused` is `true`. This invariant must be
+    /// preserved across all contract changes to prevent state-invariant bugs.
+    /// See Testing #94 for test coverage.
+    ///
     /// # Errors
     /// - `StreamNotFound`  — no stream exists with `stream_id`.
     /// - `Unauthorized`    — caller is not the stream's sender.
@@ -825,6 +840,14 @@ impl StreamContract {
     /// The `last_update_time` is advanced to `now` so that accrual resumes
     /// from the current moment, effectively extending the stream by the
     /// duration it was paused.
+    ///
+    /// **State Invariant:** A cancelled stream (status == `Cancelled`) can
+    /// never be resumed, even if `paused` is `true`. The `is_active` and
+    /// `paused` fields are independently-settable, but once a stream is
+    /// cancelled, the invariant "a cancelled stream must never be resumable"
+    /// is absolute. This invariant must be preserved across all contract
+    /// changes to prevent state-invariant bugs. See Testing #94 for test
+    /// coverage.
     ///
     /// # Errors
     /// - `StreamNotFound`  — no stream exists with `stream_id`.
