@@ -114,7 +114,7 @@ function SkeletonCard({ className = "" }: { className?: string }) {
       aria-hidden="true"
     >
       {/* shimmer sweep */}
-      <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+      <div className="absolute inset-0 -translate-x-full motion-reduce:animate-none bg-gradient-to-r from-transparent via-white/10 to-transparent" />
     </div>
   );
 }
