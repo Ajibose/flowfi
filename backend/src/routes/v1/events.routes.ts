@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { subscribe } from '../../controllers/sse.controller.js';
 import { sseService } from '../../services/sse.service.js';
-import { requireAuth } from '../../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../../middleware/auth.js';
 import type { AuthenticatedRequest } from '../../types/auth.types.js';
 import { prisma } from '../../lib/prisma.js';
 import logger from '../../logger.js';
@@ -247,7 +247,7 @@ router.get('/subscribe', requireAuth, subscribe);
  *                   type: string
  *                   format: date-time
  */
-router.get('/stats', (req: Request, res: Response) => {
+router.get('/stats', requireAdmin, (req: Request, res: Response) => {
   res.json({
     activeConnections: sseService.getClientCount(),
     activeIps: sseService.getActiveIpCount(),

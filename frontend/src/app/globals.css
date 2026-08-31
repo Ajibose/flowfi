@@ -1611,6 +1611,15 @@ body {
   animation: spin 1s linear infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer,
+  .animate-bounce,
+  .animate-pulse,
+  .animate-spin {
+    animation: none !important;
+  }
+}
+
 .dashboard-error-state h3 {
   color: var(--danger);
   margin: 0;

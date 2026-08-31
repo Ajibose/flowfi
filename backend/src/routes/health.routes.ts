@@ -163,7 +163,7 @@ router.get('/', async (_req: Request, res: Response) => {
         status: dbStatus === 'connected' ? 'ok' : 'down',
       },
       indexer: {
-        status: !indexerEnabled ? 'disabled' : indexerFailureDegraded ? 'degraded' : 'ok',
+        status: !indexerEnabled ? 'disabled' : indexerFailureDegraded || indexerLagDegraded ? 'degraded' : 'ok',
         enabled: indexerEnabled,
         lagSeconds: indexerLag === -1 ? null : indexerLag,
       },
