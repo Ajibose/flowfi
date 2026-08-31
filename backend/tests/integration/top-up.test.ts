@@ -219,11 +219,14 @@ describe('POST /v1/streams/:streamId/top-up', () => {
     
     let currentDeposited = BigInt(mockStream.depositedAmount);
 
-    vi.mocked(mockPrisma.$queryRaw).mockImplementation(async (queryArgs: any, ...values: any[]) => {
-      // values[0] is the amount, values[1] is nowTs, values[2] is streamId
+    vi.mocked(mockPrisma.$executeRawUnsafe).mockImplementation(async (query: any, ...values: any[]) => {
       const amountToAdd = BigInt(values[0]);
       currentDeposited += amountToAdd;
-      return [{ depositedAmount: currentDeposited.toString() }] as any;
+      return 1 as any;
+    });
+
+    vi.mocked(mockPrisma.stream.findUnique).mockImplementation(async () => {
+      return { ...mockStream, depositedAmount: currentDeposited.toString() } as any;
     });
 
     // Actually, to make the test pass after the fix, the best way to do atomic update is to do a transaction where we re-fetch the stream.
