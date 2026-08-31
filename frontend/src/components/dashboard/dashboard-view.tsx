@@ -38,10 +38,8 @@ import {
   getTokenAddress,
   toSorobanErrorMessage,
 } from "@/lib/soroban";
-import {
-  validateStreamForm,
-  type StreamFormData as SharedStreamFormData,
-} from "@/lib/stream-validation";
+import { validateStreamForm, type StreamFormData as SharedStreamFormData } from "@/lib/stream-validation";
+import { useStreamForm } from "@/hooks/useStreamForm";
 import IncomingStreams from "../IncomingStreams";
 import { useStreamEvents } from "@/hooks/useStreamEvents";
 import { SSEStatusIndicator } from "./SSEStatusIndicator";
@@ -568,6 +566,10 @@ export function DashboardView({ session, onDisconnect }: DashboardViewProps) {
 
   const [streamForm, setStreamForm] =
     React.useState<StreamFormValues>(EMPTY_STREAM_FORM);
+  const streamFormHook = useStreamForm({
+    walletPublicKey: session.publicKey,
+    initialData: { token: streamForm.token },
+  });
   const [templates, setTemplates] = React.useState<StreamTemplate[]>([]);
   const [templatesHydrated, setTemplatesHydrated] = React.useState(false);
   const [templateNameInput, setTemplateNameInput] = React.useState("");
@@ -697,6 +699,9 @@ export function DashboardView({ session, onDisconnect }: DashboardViewProps) {
   const updateStreamForm = (field: keyof StreamFormValues, value: string) => {
     setStreamForm((prev) => ({ ...prev, [field]: value }));
     setStreamFormMessage(null);
+    if (field === "token") {
+      streamFormHook.updateFormData({ token: value });
+    }
   };
 
   const handleApplyTemplate = (templateId: string) => {
@@ -958,7 +963,9 @@ export function DashboardView({ session, onDisconnect }: DashboardViewProps) {
       duration: String(durationSeconds),
       durationUnit: "seconds",
     };
-    const sharedErrors = validateStreamForm(canonicalData);
+    const sharedErrors = validateStreamForm(canonicalData, {
+      walletBalance: streamFormHook.walletBalance,
+    });
     if (Object.keys(sharedErrors).length > 0) {
       const firstError = Object.values(sharedErrors)[0];
       setStreamFormMessage({

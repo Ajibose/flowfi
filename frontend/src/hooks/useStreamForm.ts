@@ -183,11 +183,10 @@ function loadDraft(key: string): DraftPayload | null {
 function saveDraft(key: string, data: StreamFormData): void {
   try {
     if (typeof window === "undefined") return;
-    // Don't save pristine forms
+    // Don't save pristine forms (require user to have typed a recipient or amount)
     if (
-      data.recipient === "" &&
-      data.amount === "" &&
-      data.duration === ""
+      data.recipient.trim() === "" &&
+      data.amount.trim() === ""
     ) {
       return;
     }
@@ -308,14 +307,24 @@ export function useStreamForm(
     let cancelled = false;
 
     if (!walletPublicKey || !formData.token) {
-      setWalletBalance(null);
-      setWalletBalanceError(null);
-      setWalletBalanceLoading(false);
-      return;
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setWalletBalance(null);
+          setWalletBalanceError(null);
+          setWalletBalanceLoading(false);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    setWalletBalanceLoading(true);
-    setWalletBalanceError(null);
+    Promise.resolve().then(() => {
+      if (!cancelled) {
+        setWalletBalanceLoading(true);
+        setWalletBalanceError(null);
+      }
+    });
 
     fetchTokenBalanceDisplay(walletPublicKey, formData.token)
       .then((balance) => {
