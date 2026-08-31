@@ -32,6 +32,92 @@ router.use(adminRateLimiter);
  *     responses:
  *       200:
  *         description: Protocol health metrics
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 total_streams:
+ *                   type: integer
+ *                 active_streams:
+ *                   type: integer
+ *                 paused_streams:
+ *                   type: integer
+ *                 completed_streams:
+ *                   type: integer
+ *                 cancelled_streams:
+ *                   type: integer
+ *                 total_volume_streamed:
+ *                   type: string
+ *                   description: Sum of withdrawn amounts (i128 as string)
+ *                 streams:
+ *                   type: object
+ *                   properties:
+ *                     active: { type: integer }
+ *                     paused: { type: integer }
+ *                     total: { type: integer }
+ *                     byStatus:
+ *                       type: object
+ *                       additionalProperties: { type: integer }
+ *                 events:
+ *                   type: object
+ *                   properties:
+ *                     last24h: { type: integer }
+ *                 fees:
+ *                   type: object
+ *                   properties:
+ *                     totalFeesCollectedByToken:
+ *                       type: object
+ *                       additionalProperties: { type: string }
+ *                     feesLast24h:
+ *                       type: object
+ *                       additionalProperties: { type: string }
+ *                 sse:
+ *                   type: object
+ *                   properties:
+ *                     activeConnections: { type: integer }
+ *                 indexer:
+ *                   type: object
+ *                   properties:
+ *                     lastLedger: { type: integer }
+ *                     lagSeconds: { type: integer, nullable: true }
+ *                     lastUpdated: { type: string, format: date-time, nullable: true }
+ *                     eventsProcessed: { type: integer }
+ *                     eventsFailed: { type: integer }
+ *                     lastErrorAt: { type: string, nullable: true }
+ *                     degraded: { type: boolean }
+ *                 cache:
+ *                   type: object
+ *                   additionalProperties: true
+ *                 pgPool:
+ *                   type: object
+ *                   additionalProperties: true
+ *                 uptime:
+ *                   type: number
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 calculatedAt:
+ *                   type: string
+ *                   format: date-time
+ *       401:
+ *         description: Unauthorized - missing or invalid authentication token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden - admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 const ADMIN_METRICS_CACHE_KEY = 'admin:metrics';
 const ADMIN_METRICS_CACHE_TTL_SECONDS = 60;
@@ -216,6 +302,29 @@ router.get('/metrics', async (_req: Request, res: Response) => {
  *     responses:
  *       200:
  *         description: Indexer status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               additionalProperties: true
+ *       401:
+ *         description: Unauthorized - missing or invalid authentication token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden - admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.get('/indexer/status', async (req: Request, res: Response) => {
   try {
@@ -246,6 +355,37 @@ router.get('/indexer/status', async (req: Request, res: Response) => {
  *     responses:
  *       200:
  *         description: Reset successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok: { type: boolean, example: true }
+ *                 lastLedger: { type: integer }
+ *       400:
+ *         description: Invalid ledger value
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Unauthorized - missing or invalid authentication token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden - admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.post('/indexer/reset', async (req: Request, res: Response) => {
   const ledger = Number(req.body?.ledger);
@@ -277,6 +417,38 @@ router.post('/indexer/reset', async (req: Request, res: Response) => {
  *     responses:
  *       202:
  *         description: Replay started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok: { type: boolean, example: true }
+ *                 replayingFrom: { type: integer }
+ *                 requestId: { type: string }
+ *       400:
+ *         description: Invalid from_ledger value
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Unauthorized - missing or invalid authentication token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Forbidden - admin access required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
 router.post('/indexer/replay', async (req: Request, res: Response) => {
   const fromLedger = Number(req.query.from_ledger);

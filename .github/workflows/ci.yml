@@ -90,6 +90,15 @@ jobs:
         run: npm run build
         working-directory: backend
 
+      - name: OpenAPI spec & API types drift check
+        run: |
+          cd backend
+          npm run codegen:openapi
+          cd ../frontend
+          npm run codegen:api-types
+          cd ..
+          git diff --exit-code -- backend/swagger/flowfi.openapi.json frontend/src/lib/api-types.generated.ts
+
       - name: Install Rollup Native Binding
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
 
