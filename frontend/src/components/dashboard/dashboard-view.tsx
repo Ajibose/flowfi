@@ -2,6 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 
 /**
@@ -513,9 +514,14 @@ const RecentActivityList = React.memo(function RecentActivityList({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+const VALID_TAB_IDS = new Set(SIDEBAR_ITEMS.map((item) => item.id));
+
 export function DashboardView({ session, onDisconnect }: DashboardViewProps) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = React.useState("overview");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab = VALID_TAB_IDS.has(tabParam ?? "") ? (tabParam as string) : "overview";
   const [showWizard, setShowWizard] = React.useState(false);
   const [modal, setModal] = React.useState<ModalState>(null);
 
@@ -1398,7 +1404,11 @@ export function DashboardView({ session, onDisconnect }: DashboardViewProps) {
               className="sidebar-item"
               data-active={activeTab === item.id ? "true" : undefined}
               aria-current={activeTab === item.id ? "page" : undefined}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => {
+                const params = new URLSearchParams(searchParams.toString());
+                params.set("tab", item.id);
+                router.replace(`?${params.toString()}`);
+              }}
             >
               {item.label}
             </button>
