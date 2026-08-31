@@ -1,7 +1,6 @@
 import { rpc, xdr, StrKey, Contract, nativeToScVal, Keypair, TransactionBuilder, Networks, Account } from '@stellar/stellar-sdk';
 import logger from '../logger.js';
-
-const RPC_URL = process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
+import { rpcPool } from '../lib/rpc-pool.js';
 
 function getContractId(): string {
   return process.env.STREAM_CONTRACT_ID ?? '';
@@ -34,6 +33,16 @@ const RPC_MAX_RETRIES = Number(process.env.SOROBAN_RPC_MAX_RETRIES ?? 2);
 
 /** Base delay for exponential backoff between retries (doubles each attempt). */
 const RPC_RETRY_BASE_MS = Number(process.env.SOROBAN_RPC_RETRY_BASE_MS ?? 250);
+
+/** Bounded deadline for awaiting on-chain transaction finality (default 30s). */
+function getTxConfirmationTimeoutMs(): number {
+  return Number(process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS ?? 30_000);
+}
+
+/** Polling interval when awaiting on-chain transaction finality (default 1s). */
+function getTxPollIntervalMs(): number {
+  return Number(process.env.SOROBAN_TX_POLL_INTERVAL_MS ?? 1_000);
+}
 
 export class RpcTimeoutError extends Error {
   constructor(label: string, timeoutMs: number) {
@@ -119,11 +128,9 @@ const SIMULATION_PLACEHOLDER_ACCOUNT = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKI
 
 let _server: rpc.Server | null = null;
 
-function getServer(): rpc.Server {
-  if (!_server) {
-    _server = new rpc.Server(RPC_URL, { allowHttp: true });
-  }
-  return _server;
+async function executeRpc<T>(label: string, operation: (server: rpc.Server) => Promise<T>): Promise<T> {
+  if (_server) return operation(_server);
+  return rpcPool.execute(label, (server) => operation(server));
 }
 
 /**
@@ -133,7 +140,7 @@ function getServer(): rpc.Server {
  */
 export async function checkRpcHealth(timeoutMs = 3_000): Promise<boolean> {
   try {
-    await withRpcTimeout('soroban rpc health check', () => getServer().getHealth(), timeoutMs);
+    await withRpcTimeout('soroban rpc health check', () => executeRpc('soroban rpc health check', (server) => server.getHealth()), timeoutMs);
     return true;
   } catch {
     return false;
@@ -206,7 +213,7 @@ async function simulateContractCall(method: string, args: xdr.ScVal[]): Promise<
     .build();
 
   const result = await withRpcRetry('simulateTransaction', () =>
-    withRpcTimeout('simulateTransaction', () => getServer().simulateTransaction(tx)),
+    withRpcTimeout('simulateTransaction', () => executeRpc('simulateTransaction', (server) => server.simulateTransaction(tx))),
   );
 
   if (rpc.Api.isSimulationError(result)) {
@@ -223,7 +230,7 @@ export async function submitContractCall(method: string, args: xdr.ScVal[], send
 
   const keypair = Keypair.fromSecret(senderSecret);
   const contract = new Contract(contractId);
-  const account = await withRpcTimeout('getAccount', () => getServer().getAccount(keypair.publicKey()));
+  const account = await withRpcTimeout('getAccount', () => executeRpc('getAccount', (server) => server.getAccount(keypair.publicKey())));
 
   const op = contract.call(method, ...args);
 
@@ -240,7 +247,7 @@ export async function submitContractCall(method: string, args: xdr.ScVal[], send
 
   // Simulate first to get foot print and resource info
   const simulation = await withRpcRetry('simulateTransaction', () =>
-    withRpcTimeout('simulateTransaction', () => getServer().simulateTransaction(tx)),
+    withRpcTimeout('simulateTransaction', () => executeRpc('simulateTransaction', (server) => server.simulateTransaction(tx))),
   );
   if (rpc.Api.isSimulationError(simulation)) {
     throw new Error(`Simulation failed: ${simulation.error}`);
@@ -250,13 +257,56 @@ export async function submitContractCall(method: string, args: xdr.ScVal[], send
   const assembledTx = rpc.assembleTransaction(tx, simulation).build();
   assembledTx.sign(keypair);
 
-  const response = await withRpcTimeout('sendTransaction', () => getServer().sendTransaction(assembledTx));
+  const response = await withRpcTimeout('sendTransaction', () => executeRpc('sendTransaction', (server) => server.sendTransaction(assembledTx)));
 
   if (response.status === 'ERROR') {
     throw new Error(`Transaction failed: ${JSON.stringify(response.errorResult)}`);
   }
 
+  await pollTransactionStatus(response.hash);
+
   return response.hash;
+}
+
+/**
+ * Poll Soroban RPC getTransaction until the transaction reaches a terminal status
+ * (SUCCESS or FAILED) or until the bounded timeout expires.
+ */
+export async function pollTransactionStatus(
+  txHash: string,
+  timeoutMs: number = getTxConfirmationTimeoutMs(),
+  pollIntervalMs: number = getTxPollIntervalMs(),
+): Promise<rpc.Api.GetSuccessfulTransactionResponse> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    const txResponse = await withRpcRetry('getTransaction', () =>
+      withRpcTimeout('getTransaction', () => executeRpc('getTransaction', (server) => server.getTransaction(txHash))),
+    );
+
+    if (
+      txResponse.status === rpc.Api.GetTransactionStatus.SUCCESS ||
+      (txResponse.status as string) === 'SUCCESS'
+    ) {
+      return txResponse as rpc.Api.GetSuccessfulTransactionResponse;
+    }
+
+    if (
+      txResponse.status === rpc.Api.GetTransactionStatus.FAILED ||
+      (txResponse.status as string) === 'FAILED'
+    ) {
+      const errorDetail = (txResponse as rpc.Api.GetFailedTransactionResponse).resultXdr
+        ? ` (resultXdr: ${(txResponse as rpc.Api.GetFailedTransactionResponse).resultXdr.toXDR('base64')})`
+        : '';
+      throw new Error(`Transaction failed on-chain: ${txHash}${errorDetail}`);
+    }
+
+    if (pollIntervalMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+  }
+
+  throw new Error(`Transaction confirmation timed out after ${timeoutMs}ms: ${txHash}`);
 }
 
 export async function getStreamFromChain(streamId: bigint): Promise<ChainStream | null> {

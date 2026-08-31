@@ -91,4 +91,17 @@ describe('Cancel Stream Controller', () => {
 
     expect(res.status).toHaveBeenCalledWith(500);
   });
+
+  it('leaves DB unchanged and does not update status when cancelStream fails on-chain', async () => {
+    (prisma.stream.findUnique as any).mockResolvedValue({ sender: 'GSENDER1', isActive: true });
+    (sorobanService.cancelStream as any).mockRejectedValue(
+      new Error('Transaction failed on-chain: tx_fail_post_submission')
+    );
+
+    await cancelStreamHandler(req as AuthenticatedRequest, res as Response);
+
+    expect(sorobanService.cancelStream).toHaveBeenCalledWith(123n, 'SABC123');
+    expect(streamRepository.updateStatus).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });
