@@ -34,7 +34,7 @@ export default function CreateStreamContent() {
     formData,
     errors,
     updateFormData,
-    resetForm,
+    resetForm: _resetForm,
     validateAll,
     walletBalance,
     walletBalanceLoading,
