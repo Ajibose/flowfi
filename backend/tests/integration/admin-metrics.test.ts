@@ -49,6 +49,7 @@ const mocks = vi.hoisted(() => {
       indexerState: {
         findUnique: vi.fn(),
       },
+      $queryRaw: vi.fn(),
       $disconnect: vi.fn(),
     },
     pool: {
@@ -184,18 +185,22 @@ describe('GET /v1/admin/metrics', () => {
     process.env.ADMIN_PUBLIC_KEY = ADMIN_PUBLIC_KEY;
     mocks.cache.get.mockReturnValue(null);
     mocks.prisma.streamEvent.count.mockResolvedValue(0);
-    mocks.prisma.streamEvent.findMany.mockResolvedValue([]);
     mocks.prisma.indexerState.findUnique.mockResolvedValue(null);
-    mocks.prisma.stream.findMany.mockResolvedValue([]);
+    // The three aggregations (fees all-time, fees last 24h, withdrawn volume)
+    // run as raw SQL aggregates; default to empty results so tests that don't
+    // care about them see zeroed metrics.
+    mocks.prisma.$queryRaw.mockResolvedValue([]);
   });
 
   it('returns the snake_case summary required by the public contract', async () => {
     setupCounts({ total: 12, active: 7, paused: 2, cancelled: 2, completed: 1 });
-    mocks.prisma.stream.findMany.mockResolvedValue([
-      { withdrawnAmount: '500' },
-      { withdrawnAmount: '1500' },
-      { withdrawnAmount: '0' },
-    ]);
+    mocks.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        { token: 'XLM', total: '300' },
+        { token: 'USDC', total: '450' },
+      ])
+      .mockResolvedValueOnce([{ token: 'XLM', total: '120' }])
+      .mockResolvedValueOnce([{ total: '2000' }]);
 
     const res = await request(app)
       .get('/v1/admin/metrics')
@@ -215,11 +220,11 @@ describe('GET /v1/admin/metrics', () => {
   it('preserves precision for very large i128 withdrawn sums', async () => {
     setupCounts();
     // Two values whose sum overflows JS safe-integer range — must round-trip
-    // as the exact string.
-    mocks.prisma.stream.findMany.mockResolvedValue([
-      { withdrawnAmount: '9007199254740993' },
-      { withdrawnAmount: '9007199254740993' },
-    ]);
+    // as the exact string (summed in Postgres via numeric).
+    mocks.prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ total: '18014398509481986' }]);
 
     const res = await request(app)
       .get('/v1/admin/metrics')
@@ -227,6 +232,51 @@ describe('GET /v1/admin/metrics', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.total_volume_streamed).toBe('18014398509481986');
+  });
+
+  it('aggregates fees by token from SQL GROUP BY results (all-time and last 24h)', async () => {
+    setupCounts();
+    mocks.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        { token: 'XLM', total: '1000000000' },
+        { token: 'USDC', total: '250000000' },
+        { token: 'unknown', total: '5' },
+      ])
+      .mockResolvedValueOnce([{ token: 'XLM', total: '75000000' }])
+      .mockResolvedValueOnce([{ total: '0' }]);
+
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.fees).toEqual({
+      totalFeesCollectedByToken: {
+        XLM: '1000000000',
+        USDC: '250000000',
+        unknown: '5',
+      },
+      feesLast24h: { XLM: '75000000' },
+    });
+  });
+
+  it('computes volume/fee metrics via a constant number of aggregate queries (no row-by-row fetching)', async () => {
+    setupCounts();
+    mocks.prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ total: '42' }]);
+
+    const res = await request(app)
+      .get('/v1/admin/metrics')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(200);
+    // Exactly three aggregate queries (fees all-time, fees last 24h, volume)
+    // regardless of how many rows exist — sub-linear, constant round-trips.
+    expect(mocks.prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(mocks.prisma.stream.findMany).not.toHaveBeenCalled();
+    expect(mocks.prisma.streamEvent.findMany).not.toHaveBeenCalled();
   });
 
   it('caches the response for 60 seconds', async () => {
@@ -274,7 +324,7 @@ describe('GET /v1/admin/metrics', () => {
     expect(res.headers['x-cache']).toBe('HIT');
     expect(res.body).toMatchObject(cachedPayload);
     expect(mocks.prisma.stream.count).not.toHaveBeenCalled();
-    expect(mocks.prisma.stream.findMany).not.toHaveBeenCalled();
+    expect(mocks.prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('exposes indexer event-processing counters and degraded signal (#844)', async () => {
