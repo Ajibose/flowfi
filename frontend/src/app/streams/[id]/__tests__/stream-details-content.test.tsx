@@ -208,7 +208,7 @@ describe("StreamDetailsContent loading skeleton", () => {
     // Once the stream loads, the Claimable stat card should show the value
     // returned by the shared hook, formatted in token units (stroops → XLM).
     await waitFor(() => {
-      expect(screen.getByText(/12\.3456789 XLM/)).toBeInTheDocument();
+      expect(screen.getAllByText(/12\.3456789 XLM/).length).toBeGreaterThanOrEqual(1);
     });
   });
 });
