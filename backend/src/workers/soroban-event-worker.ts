@@ -1,10 +1,12 @@
+import { randomUUID } from "crypto";
 import { rpc, xdr, StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "../lib/prisma.js";
 import { INDEXER_STATE_ID, ensureIndexerState } from "../lib/indexer-state.js";
 import { sseService } from "../services/sse.service.js";
-import logger from "../logger.js";
+import logger, { requestContext } from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
 import "../lib/stream-id.js";
+import { rpcPool } from "../lib/rpc-pool.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -88,8 +90,8 @@ export interface IndexerEventCounters {
 // ─── Worker Class ─────────────────────────────────────────────────────────────
 
 export class SorobanEventWorker {
-  private readonly server: rpc.Server;
   private readonly contractId: string;
+  private readonly server: rpc.Server;
   private readonly pollIntervalMs: number;
   private readonly startLedger: number;
 
@@ -113,15 +115,14 @@ export class SorobanEventWorker {
   private recentOutcomes: { ok: boolean; at: number }[] = [];
 
   constructor() {
-    const rpcUrl =
-      process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
     this.contractId = process.env.STREAM_CONTRACT_ID ?? "";
+    const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+    this.server = new rpc.Server(rpcUrl, { allowHttp: true });
     this.pollIntervalMs = parseInt(
       process.env.INDEXER_POLL_INTERVAL_MS ?? "5000",
       10,
     );
     this.startLedger = parseInt(process.env.INDEXER_START_LEDGER ?? "0", 10);
-    this.server = new rpc.Server(rpcUrl, { allowHttp: true });
   }
 
   /**
@@ -198,15 +199,30 @@ export class SorobanEventWorker {
    * Trigger an immediate poll cycle (used for replay and manual updates).
    * Serialized with the scheduled poll via `runExclusive` so two cursor writes
    * cannot overlap and regress `lastCursor` (#843).
+   *
+   * @param customRequestId Optional correlation ID to bind logs to a specific request/replay.
+   * @returns The correlation requestId associated with this poll batch.
    */
-  async triggerPoll(): Promise<void> {
-    if (!this.isRunning) return;
+  async triggerPoll(customRequestId?: string): Promise<string> {
+    if (!this.isRunning) {
+      return customRequestId || requestContext?.getStore?.()?.requestId || randomUUID();
+    }
+
+    const requestId =
+      customRequestId || requestContext?.getStore?.()?.requestId || randomUUID();
 
     try {
-      await this.runExclusive(() => this.fetchAndProcessEvents());
+      await this.runExclusive(() => {
+        const runBatch = () => this.fetchAndProcessEvents();
+        return requestContext && typeof requestContext.run === 'function'
+          ? requestContext.run({ requestId }, runBatch)
+          : runBatch();
+      });
     } catch (err) {
       logger.error("[SorobanWorker] Manual poll error:", err);
     }
+
+    return requestId;
   }
 
   // ─── Internal ──────────────────────────────────────────────────────────────
@@ -270,11 +286,16 @@ export class SorobanEventWorker {
 
   private async poll(): Promise<void> {
     try {
-      await this.runExclusive(() =>
-        this.fetchAndProcessEvents().catch((err) => {
-          logger.error("[SorobanWorker] Unhandled error during poll:", err);
-        }),
-      );
+      const requestId = randomUUID();
+      await this.runExclusive(() => {
+        const execute = () =>
+          this.fetchAndProcessEvents().catch((err) => {
+            logger.error("[SorobanWorker] Unhandled error during poll:", err);
+          });
+        return requestContext && typeof requestContext.run === 'function'
+          ? requestContext.run({ requestId }, execute)
+          : execute();
+      });
     } finally {
       this.scheduleNext();
     }
@@ -285,6 +306,14 @@ export class SorobanEventWorker {
    * cursor (or start ledger on first run) and process each one in order.
    */
   private async fetchAndProcessEvents(): Promise<void> {
+    const currentCtx = requestContext?.getStore?.();
+    if (!currentCtx?.requestId && requestContext && typeof requestContext.run === 'function') {
+      const requestId = randomUUID();
+      return requestContext.run({ requestId }, () =>
+        this.fetchAndProcessEvents(),
+      );
+    }
+
     // Ensure an IndexerState row exists on first run.
     const state = await ensureIndexerState(this.startLedger);
 
@@ -307,12 +336,13 @@ export class SorobanEventWorker {
       ? { ...baseFilter, cursor: state.lastCursor }
       : { ...baseFilter, startLedger: state.lastLedger || this.startLedger };
 
-    const response = await this.server.getEvents(params);
+    const response = await (this.server ? this.server.getEvents(params) : rpcPool.execute("getEvents", (server) => server.getEvents(params)));
 
     if (response.events.length === 0) return;
 
     let lastCursor: string | null = state.lastCursor;
     let lastLedger: number = state.lastLedger;
+    let hasError = false;
 
     // Sort events so that 'stream_created' events are processed first in the batch.
     // This ensures that subsequent events (like 'fee_collected') that depend on
@@ -333,10 +363,13 @@ export class SorobanEventWorker {
         await this.processEvent(event);
         this.eventsProcessed += 1;
         this.recordOutcome(true);
-        // Use the event ID as the cursor if pagingToken is not available
-        lastCursor = event.id;
-        lastLedger = event.ledger;
+        if (!hasError) {
+          // Use the event ID as the cursor if pagingToken is not available
+          lastCursor = event.id;
+          lastLedger = event.ledger;
+        }
       } catch (err) {
+        hasError = true;
         this.eventsFailed += 1;
         this.lastErrorAt = new Date();
         this.recordOutcome(false);
@@ -348,8 +381,10 @@ export class SorobanEventWorker {
       }
     }
 
-    // Use the response's final cursor if provided, otherwise the last event's ID
-    const finalCursor = (response as any).latestCursor || lastCursor;
+    // Use the response's final cursor if provided and no error occurred, otherwise the last valid event's ID
+    const finalCursor = hasError
+      ? lastCursor
+      : ((response as any).latestCursor || lastCursor);
 
     await prisma.indexerState.upsert({
       where: { id: INDEXER_STATE_ID },
@@ -1107,7 +1142,7 @@ export class SorobanEventWorker {
     }
 
     const sender = decodeAddress(body["sender"]);
-    const newEndTime = Number(decodeU64(body["new_end_time"]));
+    const newEndTime = decodeU64(body["new_end_time"]);
     const timestamp = Math.floor(Date.now() / 1000);
 
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -1164,7 +1199,7 @@ export class SorobanEventWorker {
             timestamp,
             metadata: JSON.stringify({
               sender,
-              newEndTime,
+              newEndTime: newEndTime.toString(),
               pausedDuration: additionalPausedDuration,
               totalPausedDuration: newTotalPausedDuration,
             }),
@@ -1180,7 +1215,7 @@ export class SorobanEventWorker {
     sseService.broadcastToStream(String(streamId), "stream.resumed", {
       streamId,
       sender,
-      newEndTime,
+      newEndTime: newEndTime.toString(),
       transactionHash: event.txHash,
       ledger: event.ledger,
       timestamp,

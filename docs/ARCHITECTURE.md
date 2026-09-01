@@ -165,8 +165,18 @@ Benefits:
 ## Operational Notes
 
 1. `/v1/events/stats` exposes active SSE connections and connection-capacity metrics.
-1. Admin metrics include SSE peak-per-IP visibility for abuse monitoring.
-1. User summary endpoint (`/v1/users/{address}/summary`) is cached for 30s to protect DB hot paths.
+2. Admin metrics include SSE peak-per-IP visibility for abuse monitoring.
+3. User summary endpoint (`/v1/users/{address}/summary`) is cached for 30s to protect DB hot paths.
+
+---
+
+## Logging & Observability
+
+All backend log lines use standard JSON formatting via Winston and include a `requestId` correlation ID field when running inside a request or worker context (managed by Node's `AsyncLocalStorage` via `requestContext` in `backend/src/logger.ts`).
+
+- **HTTP Requests:** Requests receive or generate a `requestId` via `requestIdMiddleware` (`X-Request-ID` header).
+- **Background Indexer/Worker Poll Cycles:** Each `SorobanEventWorker` poll batch runs inside `requestContext.run({ requestId: randomUUID() }, ...)` so all RPC fetches, event processing, and per-event error logs within that poll cycle share a single correlation ID.
+- **Admin Replays:** Triggering an indexer event replay (via `replayFromLedger` or `POST /v1/admin/indexer/replay`) wraps the reset and worker poll cycle in `requestContext`. The correlation ID is included on all log statements emitted during replay and returned in the HTTP API response (`{ ok: true, replayingFrom: <ledger>, requestId: "<id>" }`).
 
 ---
 

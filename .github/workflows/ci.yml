@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --include=optional
 
       - name: Lint
         run: npm run lint
@@ -90,6 +90,15 @@ jobs:
         run: npm run build
         working-directory: backend
 
+      - name: OpenAPI spec & API types drift check
+        run: |
+          cd backend
+          npm run codegen:openapi
+          cd ../frontend
+          npm run codegen:api-types
+          cd ..
+          git diff --exit-code -- backend/swagger/flowfi.openapi.json frontend/src/lib/api-types.generated.ts
+
       - name: Install Rollup Native Binding
         run: npm install @rollup/rollup-linux-x64-gnu --no-save
 
@@ -144,8 +153,18 @@ jobs:
           sleep 10
           docker compose run --rm -e DATABASE_URL=postgresql://flowfi:flowfi_dev_password@postgres:5432/flowfi backend npx -y prisma db push --accept-data-loss
           docker compose up -d backend
-          sleep 15
-          curl --fail http://localhost:3001/health || (docker compose logs backend && exit 1)
+          # Poll /health instead of a fixed sleep so cold-boot / Prisma-warmup
+          # latency does not flake the Backend Docker Image CI.
+          for i in $(seq 1 60); do
+            if curl --silent --fail --max-time 2 --connect-timeout 1 http://localhost:3001/health; then
+              echo "Backend health check passed after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Backend health check did not pass within 60s"
+          docker compose logs backend
+          exit 1
 
   contracts:
     name: Soroban Contracts CI
@@ -182,8 +201,16 @@ jobs:
         run: cargo test
         working-directory: contracts
 
+      - name: Cache cargo-tarpaulin
+        id: tarpaulin-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tarpaulin
+          key: cargo-tarpaulin-${{ runner.os }}-0.37.2
+
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        if: steps.tarpaulin-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-tarpaulin@0.37.2 --locked
 
       - name: Run Contract Coverage
         run: cargo tarpaulin --workspace --out Xml --output-dir coverage --fail-under 70
