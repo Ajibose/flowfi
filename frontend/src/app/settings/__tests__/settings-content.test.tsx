@@ -59,6 +59,22 @@ vi.mock("@/lib/api/_shared", () => ({
   getApiBaseUrl: () => "http://localhost:4000",
 }));
 
+vi.mock("@/components/wallet/DisconnectConfirmModal", () => ({
+  DisconnectConfirmModal: ({
+    onConfirm,
+  }: {
+    onClose: () => void;
+    onConfirm: () => void;
+    walletAddress: string;
+  }) => {
+    // Auto-confirm immediately so tests can assert the downstream flow.
+    React.useEffect(() => {
+      onConfirm();
+    }, []);
+    return null;
+  },
+}));
+
 import SettingsContent from "../settings-content";
 
 function getThemeButtons(): HTMLElement[] {

@@ -10,6 +10,7 @@ import { formatNetwork } from "@/lib/wallet";
 import toast from "react-hot-toast";
 import { getApiBaseUrl } from "@/lib/api/_shared";
 import { DisconnectConfirmModal } from "@/components/wallet/DisconnectConfirmModal";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
 
 type DisplayCurrency = "USD" | "EUR" | "GBP" | "XLM" | "USDC";
 type AmountFormat = "full" | "compact";
@@ -109,7 +110,12 @@ export default function SettingsContent() {
     applyThemeClass(newTheme); // live preview; persisted on save
   };
 
-  const [copied, setCopied] = useState(false);
+  const handleSave = () => {
+    persistSettings(draft);
+    setSaved(draft);
+    toast.success("Settings saved");
+  };
+
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
 
   const handleDisconnect = () => {
