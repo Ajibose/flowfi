@@ -91,6 +91,8 @@ vi.mock('../../src/services/indexerService.js', () => ({
   getIndexerStatus: vi.fn().mockResolvedValue({}),
   resetIndexer: vi.fn().mockResolvedValue(undefined),
   replayFromLedger: vi.fn().mockResolvedValue(undefined),
+  previewReset: vi.fn().mockResolvedValue({}),
+  previewReplay: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../src/workers/soroban-event-worker.js', () => ({
@@ -114,6 +116,8 @@ import {
   getIndexerStatus,
   resetIndexer,
   replayFromLedger,
+  previewReset,
+  previewReplay,
 } from '../../src/services/indexerService.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -570,6 +574,50 @@ describe('POST /v1/admin/indexer/reset', () => {
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Reset failed' });
   });
+
+  it('returns a dry-run preview without calling resetIndexer when dryRun=true', async () => {
+    const preview = {
+      currentLastLedger: 1000,
+      currentLastCursor: 'cursor_xyz',
+      targetLastLedger: 500,
+    };
+    vi.mocked(previewReset).mockResolvedValueOnce(preview);
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/reset?dryRun=true')
+      .set('Authorization', `Bearer ${createToken()}`)
+      .send({ ledger: 500 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ dryRun: true, preview });
+    expect(previewReset).toHaveBeenCalledWith(500);
+    expect(resetIndexer).not.toHaveBeenCalled();
+  });
+
+  it('treats non-true dryRun values as a real reset', async () => {
+    const res = await request(app)
+      .post('/v1/admin/indexer/reset?dryRun=false')
+      .set('Authorization', `Bearer ${createToken()}`)
+      .send({ ledger: 300 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, lastLedger: 300 });
+    expect(resetIndexer).toHaveBeenCalledWith(300);
+    expect(previewReset).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when previewReset throws for a dry-run request', async () => {
+    vi.mocked(previewReset).mockRejectedValueOnce(new Error('Preview failed'));
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/reset?dryRun=true')
+      .set('Authorization', `Bearer ${createToken()}`)
+      .send({ ledger: 500 });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Reset failed' });
+    expect(resetIndexer).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /v1/admin/indexer/replay', () => {
@@ -636,6 +684,50 @@ describe('POST /v1/admin/indexer/replay', () => {
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Replay failed' });
+  });
+
+  it('returns a dry-run preview without triggering a replay when dryRun=true', async () => {
+    const preview = {
+      fromLedger: 200,
+      currentLastLedger: 1000,
+      currentLastCursor: 'cursor_xyz',
+      eventCount: 42,
+      minLedgerInReplayRange: 210,
+      maxLedgerInReplayRange: 999,
+    };
+    vi.mocked(previewReplay).mockResolvedValueOnce(preview);
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/replay?from_ledger=200&dryRun=true')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ dryRun: true, preview });
+    expect(previewReplay).toHaveBeenCalledWith(200);
+    expect(replayFromLedger).not.toHaveBeenCalled();
+  });
+
+  it('treats non-true dryRun values as a real replay', async () => {
+    const res = await request(app)
+      .post('/v1/admin/indexer/replay?from_ledger=200&dryRun=false')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ ok: true, replayingFrom: 200 });
+    expect(replayFromLedger).toHaveBeenCalledWith(200);
+    expect(previewReplay).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when previewReplay throws for a dry-run request', async () => {
+    vi.mocked(previewReplay).mockRejectedValueOnce(new Error('Preview failed'));
+
+    const res = await request(app)
+      .post('/v1/admin/indexer/replay?from_ledger=200&dryRun=true')
+      .set('Authorization', `Bearer ${createToken()}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Replay failed' });
+    expect(replayFromLedger).not.toHaveBeenCalled();
   });
 });
 

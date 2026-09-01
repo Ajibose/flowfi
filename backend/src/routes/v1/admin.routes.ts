@@ -6,6 +6,8 @@ import {
   getIndexerStatus,
   resetIndexer,
   replayFromLedger,
+  previewReset,
+  previewReplay,
 } from '../../services/indexerService.js';
 
 import { prisma, pool } from '../../lib/prisma.js';
@@ -344,8 +346,15 @@ router.get('/indexer/status', async (req: Request, res: Response) => {
  * /v1/admin/indexer/reset:
  *   post:
  *     tags: [Admin]
- *     summary: Reset indexer lastProcessedLedger
+ *     summary: Reset indexer lastProcessedLedger (supports dry-run preview)
  *     security: [{ adminAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: dryRun
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, return the projected reset scope without mutating state.
  *     requestBody:
  *       required: true
  *       content:
@@ -397,7 +406,15 @@ router.post('/indexer/reset', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'ledger must be a non-negative integer' });
     return;
   }
+
+  const dryRun = req.query.dryRun === 'true';
+
   try {
+    if (dryRun) {
+      const preview = await previewReset(ledger);
+      res.json({ dryRun: true, preview });
+      return;
+    }
     await resetIndexer(ledger);
     res.json({ ok: true, lastLedger: ledger });
   } catch (err) {
@@ -410,7 +427,7 @@ router.post('/indexer/reset', async (req: Request, res: Response) => {
  * /v1/admin/indexer/replay:
  *   post:
  *     tags: [Admin]
- *     summary: Replay events from a given ledger (StreamEvent rows deduplicated; stream mutations not idempotent — see indexerService.ts JSDoc)
+ *     summary: Replay events from a given ledger (supports dry-run preview)
  *     security: [{ adminAuth: [] }]
  *     parameters:
  *       - in: query
@@ -418,7 +435,15 @@ router.post('/indexer/reset', async (req: Request, res: Response) => {
  *         required: true
  *         schema:
  *           type: integer
+ *       - in: query
+ *         name: dryRun
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If true, return the projected replay scope without mutating state.
  *     responses:
+ *       200:
+ *         description: Dry-run preview of the replay scope
  *       202:
  *         description: Replay started
  *         content:
@@ -460,7 +485,15 @@ router.post('/indexer/replay', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'from_ledger must be a non-negative integer' });
     return;
   }
+
+  const dryRun = req.query.dryRun === 'true';
+
   try {
+    if (dryRun) {
+      const preview = await previewReplay(fromLedger);
+      res.json({ dryRun: true, preview });
+      return;
+    }
     const requestId = await replayFromLedger(fromLedger);
     res.status(202).json({ ok: true, replayingFrom: fromLedger, requestId });
   } catch (err) {
